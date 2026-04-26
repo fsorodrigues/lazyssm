@@ -1,57 +1,71 @@
 package tui
 
 import (
-	"fmt"
-	"io"
-
-	"lazyssm/model"
-
+	// "fmt"
+	// "io"
+	// "strings"
 	"charm.land/bubbles/v2/list"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	// tea "charm.land/bubbletea/v2"
+	// "charm.land/lipgloss/v2"
 )
 
 type State struct {
-	List list.Model
+	Items         []list.Item
+	List          list.Model
+	ActivePanel   string
+	UserInterface UserInterface
 }
 
-type styles struct {
-	title        lipgloss.Style
-	item         lipgloss.Style
-	selectedItem lipgloss.Style
-	pagination   lipgloss.Style
-	help         lipgloss.Style
-	quitText     lipgloss.Style
-}
-
-type itemDelegate struct {
-	styles *styles
-}
-
-func (d itemDelegate) Height() int                             { return 1 }
-func (d itemDelegate) Spacing() int                            { return 0 }
-func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
-func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(model.Item)
-	if !ok {
-		return
-	}
-
-	str := fmt.Sprintf("%d. %s", index+1, i)
-
-	fn := d.styles.item.Render
-	if index == m.Index() {
-		fn = func(s ...string) string {
-			return d.styles.selectedItem.Render("> " + strings.Join(s, " "))
-		}
-	}
-
-	fmt.Fprint(w, fn(str))
-}
-
-func NewState(cfg *Config) State {
-	items := make([]list.Item, len(cfg.Services))
+func NewState() State {
 	return State{
-		List: list.New(items, interface{}, 40, 40),
+		Items:       make([]list.Item, 0),
+		ActivePanel: "services",
+		UserInterface: UserInterface{
+			Width:  0,
+			Height: 0,
+		},
 	}
+}
+
+func (s *State) SetActivePanel(panel string) {
+	s.ActivePanel = panel
+}
+
+func (s *State) CircleActivePanel() {
+	switch s.ActivePanel {
+	case "services":
+		s.SetActivePanel("running")
+	case "running":
+		s.SetActivePanel("services")
+	}
+}
+
+type Item struct {
+	title       string
+	description string
+	Service     *Service
+}
+
+func NewItem(srv *Service) Item {
+	return Item{
+		title:       srv.Name,
+		description: srv.Region,
+		Service:     srv,
+	}
+}
+
+func (i Item) FilterValue() string {
+	return i.title
+}
+
+func (i Item) Title() string {
+	return i.title
+}
+
+func (i Item) Description() string {
+	return i.description
+}
+
+type DelegateItem struct {
+	Item
 }
