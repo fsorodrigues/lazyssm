@@ -1,25 +1,23 @@
 package tui
 
 import (
-	// "fmt"
-	// "io"
-	// "strings"
 	"charm.land/bubbles/v2/list"
-	// tea "charm.land/bubbletea/v2"
-	// "charm.land/lipgloss/v2"
 )
 
 type State struct {
-	Items         []list.Item
-	List          list.Model
+	ServiceItems  []list.Item
+	RunningItems  []list.Item
+	ServiceList   list.Model
+	RunningList   list.Model
 	ActivePanel   string
 	UserInterface UserInterface
 }
 
 func NewState() State {
 	return State{
-		Items:       make([]list.Item, 0),
-		ActivePanel: "services",
+		ServiceItems: make([]list.Item, 0),
+		RunningItems: make([]list.Item, 0),
+		ActivePanel:  "services",
 		UserInterface: UserInterface{
 			Width:  0,
 			Height: 0,
