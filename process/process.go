@@ -1,24 +1,29 @@
 package process
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 )
 
 type Proc struct {
-	Name    string
-	Cmd     string
-	PID     int
-	Outfile string
-	Status  string
-	Process *exec.Cmd
-	LogFile *os.File
+	Name     string
+	Cmd      string
+	PID      int
+	Outfile  string
+	Status   string
+	Process  *exec.Cmd
+	LogFile  *os.File
+	LastLine string
 }
 
 func (p *Proc) Run() {
 	// 1. Create or open the log file
-	logFile, err := os.OpenFile("process.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
+	logFileName := fmt.Sprintf("process-%s.log", p.Name)
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
 	if err != nil {
 		panic(err)
 	}
@@ -41,7 +46,8 @@ func (p *Proc) Run() {
 	p.PID = cmd.Process.Pid
 	p.Status = "running"
 	p.LogFile = logFile
-	log.Printf("Background process started with PID: %d. Logging to process.log\n", p.PID)
+	p.Outfile = logFileName
+	log.Printf("Background process started with PID: %d. Logging to %s\n", p.PID, logFileName)
 }
 
 func (p Proc) Kill() {
@@ -69,4 +75,69 @@ func (p Proc) Kill() {
 		p.LogFile.Close()
 		p.LogFile = nil
 	}
+}
+
+// RefreshOutput reads the last line from the process log file and caches it in LastLine.
+func (p *Proc) RefreshOutput() string {
+	if p.Outfile == "" {
+		return ""
+	}
+	f, err := os.Open(p.Outfile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	// Seek to the end and scan backwards for the last non-empty line.
+	var lastLine string
+	stat, err := f.Stat()
+	if err != nil || stat.Size() == 0 {
+		return ""
+	}
+
+	// Read from end, up to 4KB should be enough for last line
+	readSize := int64(4096)
+	if stat.Size() < readSize {
+		readSize = stat.Size()
+	}
+	_, _ = f.Seek(-readSize, io.SeekEnd)
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if t := scanner.Text(); t != "" {
+			lastLine = t
+		}
+	}
+	p.LastLine = lastLine
+	return lastLine
+}
+
+type Item struct {
+	title       string
+	description string
+	Process     *Proc
+}
+
+func NewItem(proc *Proc) Item {
+	return Item{
+		title:       proc.Name,
+		description: proc.Status,
+		Process:     proc,
+	}
+}
+
+func (i Item) FilterValue() string {
+	return i.title
+}
+
+func (i Item) Title() string {
+	return i.title
+}
+
+func (i Item) Description() string {
+	return i.description
+}
+
+type DelegateItem struct {
+	Item
 }
