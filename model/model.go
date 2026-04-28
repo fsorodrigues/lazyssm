@@ -150,8 +150,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						delete(m.RunningInstances, name)
 					}
 					m.State.RunningList.RemoveItem(idx)
+					m.State.RunningList.Select(max(idx-1, 0))
 					statusCmd := m.State.RunningList.NewStatusMessage("deleted " + name)
-					m.State.SetActivePanel("services")
+					if len(m.RunningInstances) == 0 {
+						m.State.SetActivePanel("services")
+					}
 					return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 				}
 			}
