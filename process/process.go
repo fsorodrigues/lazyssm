@@ -8,6 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+)
+
+const (
+	StatusRunning = "running"
+	StatusExited  = "exited"
+	StatusFailed  = "failed"
+	StatusKilled  = "killed"
 )
 
 type Proc struct {
@@ -20,6 +28,18 @@ type Proc struct {
 	LogFile       *os.File
 	LastLine      string
 	ProcessLogDir string
+	ExitCode      int
+
+	mu sync.RWMutex
+}
+
+type Snapshot struct {
+	Name     string
+	PID      int
+	Status   string
+	LastLine string
+	Outfile  string
+	ExitCode int
 }
 
 func (p *Proc) Run() {
@@ -39,48 +59,136 @@ func (p *Proc) Run() {
 		panic(err)
 	}
 
+	p.mu.Lock()
 	p.Process = cmd
 	p.PID = cmd.Process.Pid
-	p.Status = "running"
+	p.Status = StatusRunning
 	p.LogFile = logFile
 	p.Outfile = logFilePath
-	slog.Info("background process started", "name", p.Name, "pid", p.PID, "process_output_file", logFilePath)
+	p.ExitCode = 0
+	p.mu.Unlock()
+
+	slog.Info("background process started", "name", p.Name, "pid", cmd.Process.Pid, "process_output_file", logFilePath)
+
+	go p.waitForExit()
 }
 
-func (p Proc) Kill() {
-	if p.PID == 0 {
+func (p *Proc) Kill() {
+	snapshot := p.Snapshot()
+	if snapshot.PID == 0 {
 		slog.Warn("no PID set for process; nothing to kill", "name", p.Name)
 		return
 	}
 
-	proc, err := os.FindProcess(p.PID)
+	if snapshot.Status != StatusRunning {
+		slog.Info("process already stopped", "name", p.Name, "pid", snapshot.PID, "status", snapshot.Status)
+		return
+	}
+
+	proc, err := os.FindProcess(snapshot.PID)
 	if err != nil {
-		slog.Error("could not find process", "name", p.Name, "pid", p.PID, "error", err)
+		slog.Error("could not find process", "name", p.Name, "pid", snapshot.PID, "error", err)
 		return
 	}
 
 	if err := proc.Signal(os.Interrupt); err != nil {
-		slog.Warn("failed to send SIGINT; attempting SIGKILL", "name", p.Name, "pid", p.PID, "error", err)
+		slog.Warn("failed to send SIGINT; attempting SIGKILL", "name", p.Name, "pid", snapshot.PID, "error", err)
 		if err := proc.Kill(); err != nil {
-			slog.Error("failed to kill process", "name", p.Name, "pid", p.PID, "error", err)
+			slog.Error("failed to kill process", "name", p.Name, "pid", snapshot.PID, "error", err)
+			return
 		}
 	}
 
-	slog.Info("process killed", "name", p.Name, "pid", p.PID)
+	p.mu.Lock()
+	p.Status = StatusKilled
+	p.closeLogFileLocked()
+	p.mu.Unlock()
 
+	slog.Info("process killed", "name", p.Name, "pid", snapshot.PID)
+}
+
+func (p *Proc) Refresh() Snapshot {
+	p.refreshOutput()
+	return p.Snapshot()
+}
+
+func (p *Proc) Snapshot() Snapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return Snapshot{
+		Name:     p.Name,
+		PID:      p.PID,
+		Status:   p.Status,
+		LastLine: p.LastLine,
+		Outfile:  p.Outfile,
+		ExitCode: p.ExitCode,
+	}
+}
+
+func (p *Proc) waitForExit() {
+	p.mu.RLock()
+	cmd := p.Process
+	pid := p.PID
+	outfile := p.Outfile
+	p.mu.RUnlock()
+
+	if cmd == nil {
+		return
+	}
+
+	err := cmd.Wait()
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+
+	p.mu.Lock()
+	if p.Status == StatusKilled {
+		if exitCode != 0 {
+			p.ExitCode = exitCode
+		}
+		p.closeLogFileLocked()
+		p.mu.Unlock()
+		slog.Info("process exit observed after kill", "name", p.Name, "pid", pid, "exit_code", exitCode, "process_output_file", outfile)
+		return
+	}
+
+	p.Status = statusForWait(err)
+	p.ExitCode = exitCode
+	p.closeLogFileLocked()
+	status := p.Status
+	p.mu.Unlock()
+
+	if err != nil {
+		slog.Warn("process exited with error", "name", p.Name, "pid", pid, "status", status, "exit_code", exitCode, "error", err, "process_output_file", outfile)
+		return
+	}
+
+	slog.Info("process exited", "name", p.Name, "pid", pid, "status", status, "exit_code", exitCode, "process_output_file", outfile)
+}
+
+func statusForWait(err error) string {
+	if err == nil {
+		return StatusExited
+	}
+	return StatusFailed
+}
+
+func (p *Proc) closeLogFileLocked() {
 	if p.LogFile != nil {
 		p.LogFile.Close()
 		p.LogFile = nil
 	}
 }
 
-// RefreshOutput reads the last line from the process log file and caches it in LastLine.
-func (p *Proc) RefreshOutput() string {
-	if p.Outfile == "" {
+func (p *Proc) refreshOutput() string {
+	snapshot := p.Snapshot()
+	if snapshot.Outfile == "" {
 		return ""
 	}
 
-	f, err := os.Open(p.Outfile)
+	f, err := os.Open(snapshot.Outfile)
 	if err != nil {
 		return ""
 	}
@@ -101,8 +209,17 @@ func (p *Proc) RefreshOutput() string {
 			lastLine = t
 		}
 	}
+
+	p.mu.Lock()
 	p.LastLine = lastLine
+	p.mu.Unlock()
+
 	return lastLine
+}
+
+// RefreshOutput reads the last line from the process log file and caches it in LastLine.
+func (p *Proc) RefreshOutput() string {
+	return p.refreshOutput()
 }
 
 type Item struct {
@@ -112,9 +229,14 @@ type Item struct {
 }
 
 func NewItem(proc *Proc) Item {
+	description := ""
+	if proc != nil {
+		description = proc.Snapshot().Status
+	}
+
 	return Item{
 		title:       proc.Name,
-		description: proc.Status,
+		description: description,
 		Process:     proc,
 	}
 }
