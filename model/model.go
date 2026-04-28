@@ -170,7 +170,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Name:          selectedItem.Title(),
 					ProcessLogDir: m.Config.ProcessLogDir,
 				}
-				p.Run()
+				if err := p.Run(); err != nil {
+					slog.Error("start managed process", "name", selectedItem.Title(), "error", err)
+					cmd := m.State.ServiceList.NewStatusMessage(err.Error())
+					return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+				}
 				m.RunningInstances[selectedItem.Title()] = p
 				m.State.SetActivePanel("running")
 

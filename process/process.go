@@ -42,12 +42,12 @@ type Snapshot struct {
 	ExitCode int
 }
 
-func (p *Proc) Run() {
+func (p *Proc) Run() error {
 	logFileName := fmt.Sprintf("process-%s.log", p.Name)
 	logFilePath := filepath.Join(p.ProcessLogDir, logFileName)
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	cmd := exec.Command("./simulate_service.sh", p.Name, "5")
@@ -56,7 +56,7 @@ func (p *Proc) Run() {
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		panic(err)
+		return err
 	}
 
 	p.mu.Lock()
@@ -71,6 +71,8 @@ func (p *Proc) Run() {
 	slog.Info("background process started", "name", p.Name, "pid", cmd.Process.Pid, "process_output_file", logFilePath)
 
 	go p.waitForExit()
+
+	return nil
 }
 
 func (p *Proc) Kill() {
