@@ -3,10 +3,23 @@ package process
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 
 	"lazyssm/tui"
 )
+
+func NewCommandBuilder(simulate bool) (CommandBuilder, error) {
+	if simulate {
+		scriptPath, err := filepath.Abs("scripts/simulate_service.sh")
+		if err != nil {
+			return nil, err
+		}
+		return SimulateCommandBuilder{ScriptPath: scriptPath, Interval: 5}, nil
+	}
+
+	return SSMCommandBuilder{}, nil
+}
 
 type CommandBuilder interface {
 	Build(service tui.Service) (*exec.Cmd, error)

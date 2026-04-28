@@ -8,6 +8,7 @@ import (
 
 	"lazyssm/internal/logging"
 	"lazyssm/model"
+	"lazyssm/process"
 	"lazyssm/tui"
 
 	tea "charm.land/bubbletea/v2"
@@ -19,6 +20,7 @@ func main() {
 	debug := flag.Bool("debug", false, "enable debug application and Bubble Tea logs")
 	logFilePath := flag.String("log-file", logging.DefaultLogFile, "application log file path; does not affect managed process output files")
 	processLogDir := flag.String("process-log-dir", logging.DefaultProcessLogDir, "managed process output directory; does not affect the application log file")
+	simulate := flag.Bool("simulate", false, "run managed processes using the simulate service script")
 	flag.Parse()
 
 	logFile, resolvedLogPath, err := logging.Setup(*logFilePath, *debug)
@@ -59,7 +61,14 @@ func main() {
 	}
 	slog.Debug("loaded config", "service_count", len(config.Services), "source_file", config.SourceFile, "process_log_dir", config.ProcessLogDir)
 
-	p := tea.NewProgram(model.InitModel(config))
+	builder, err := process.NewCommandBuilder(*simulate)
+	if err != nil {
+		slog.Error("configure command builder", "simulate", *simulate, "error", err)
+		fmt.Fprintf(os.Stderr, "Error configuring command builder: %v\n", err)
+		os.Exit(1)
+	}
+
+	p := tea.NewProgram(model.InitModel(config, builder))
 	if _, err := p.Run(); err != nil {
 		slog.Error("run TUI program", "error", err)
 		fmt.Fprintf(os.Stderr, "Alas, there's been an error: %v\n", err)
