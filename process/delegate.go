@@ -11,13 +11,18 @@ import (
 )
 
 var (
-	itemStyle     = lipgloss.NewStyle().PaddingLeft(2)
-	selectedStyle = lipgloss.NewStyle().PaddingLeft(1).
+	borderStyle = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder(), false, false, false, true).
 			BorderForeground(lipgloss.Color("228"))
+	itemStyle   = lipgloss.NewStyle().PaddingLeft(2)
 	outputStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888888")).
 			PaddingLeft(4)
+	selectedStyle       = lipgloss.NewStyle().PaddingLeft(1).Inherit(borderStyle)
+	selectedOutputStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#888888")).
+				PaddingLeft(3).
+				Inherit(borderStyle)
 )
 
 // RunningDelegate is a custom ItemDelegate for the running services list.
@@ -45,9 +50,10 @@ func (d RunningDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	status := "unknown"
 	output := ""
 	if proc != nil {
-		pid = proc.PID
-		status = proc.Status
-		output = proc.LastLine
+		snapshot := proc.Snapshot()
+		pid = snapshot.PID
+		status = snapshot.Status
+		output = snapshot.LastLine
 	}
 
 	// Line 1: name | PID | status
@@ -64,7 +70,7 @@ func (d RunningDelegate) Render(w io.Writer, m list.Model, index int, item list.
 
 	if index == m.Index() {
 		line1 = selectedStyle.Render(line1)
-		line2 := outputStyle.Render(output)
+		line2 := selectedOutputStyle.Render(output)
 		fmt.Fprintf(w, "%s\n%s", line1, line2)
 	} else {
 		line1 = itemStyle.Render(line1)

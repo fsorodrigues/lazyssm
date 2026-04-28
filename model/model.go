@@ -1,7 +1,8 @@
 package model
 
 import (
-	"log"
+	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -88,7 +89,8 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Cleanup() {
 	for name, p := range m.RunningInstances {
-		log.Printf("Cleaning up process: %s (PID %d)\n", name, p.PID)
+		snapshot := p.Snapshot()
+		slog.Info("cleaning up process", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
 		p.Kill()
 	}
 }
@@ -105,9 +107,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case refreshMsg:
-		for _, p := range m.RunningInstances {
-			p.RefreshOutput()
-		}
+		m.refreshRunningItems()
 		return m, tickRefresh()
 
 	case tea.KeyPressMsg:
@@ -144,7 +144,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx := m.State.RunningList.GlobalIndex()
 					name := selection.FilterValue()
 					if p, ok := m.RunningInstances[name]; ok {
-						log.Printf("Killing process: %s (PID %d)\n", name, p.PID)
+						snapshot := p.Snapshot()
+						slog.Info("removing process from panel", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
 						p.Kill()
 						delete(m.RunningInstances, name)
 					}
@@ -158,11 +159,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selection := m.State.ServiceList.SelectedItem()
 				selectedItem, ok := selection.(tui.Item)
 				if !ok {
-					log.Print("Error")
+					slog.Error("selected service item has unexpected type")
+					return m, nil
 				}
 
 				p := &process.Proc{
-					Name: selectedItem.Title(),
+					Name:          selectedItem.Title(),
+					ProcessLogDir: m.Config.ProcessLogDir,
 				}
 				p.Run()
 				m.RunningInstances[selectedItem.Title()] = p
@@ -184,6 +187,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m *Model) refreshRunningItems() {
+	names := make([]string, 0, len(m.RunningInstances))
+	for name := range m.RunningInstances {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	items := make([]list.Item, 0, len(m.RunningInstances))
+	for _, name := range names {
+		p := m.RunningInstances[name]
+		p.Refresh()
+		items = append(items, process.NewItem(p))
+	}
+	m.State.RunningItems = items
+	m.State.RunningList.SetItems(items)
 }
 
 func (m Model) View() tea.View {
