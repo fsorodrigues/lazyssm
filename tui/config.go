@@ -1,14 +1,15 @@
 package tui
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
 
 type Config struct {
-	Services   []Service `yaml:"services"`
-	SourceFile string
+	Services      []Service `yaml:"services"`
+	SourceFile    string
+	ProcessLogDir string
 }
 
 type Service struct {
@@ -31,13 +32,14 @@ func NewConfig() *Config {
 func ReadConfigFromFile(file string) ([]byte, error) {
 	absPath, err := filepath.Abs(file)
 	if err != nil {
-		fmt.Printf("Error finding config file %s: %s", absPath, err)
+		slog.Error("resolve config file path", "path", file, "resolved_path", absPath, "error", err)
 		return nil, err
 	}
 
+	slog.Debug("reading config file", "path", file, "resolved_path", absPath)
 	data, err := os.ReadFile(file)
 	if err != nil {
-		fmt.Printf("Error reading config file %s: %s", file, err)
+		slog.Error("read config file", "path", file, "error", err)
 		return nil, err
 	}
 
