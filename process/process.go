@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+
+	"lazyssm/tui"
 )
 
 const (
@@ -29,6 +31,8 @@ type Proc struct {
 	LastLine      string
 	ProcessLogDir string
 	ExitCode      int
+	Service       tui.Service
+	Builder       CommandBuilder
 
 	mu sync.RWMutex
 }
@@ -50,9 +54,20 @@ func (p *Proc) Run() error {
 		return err
 	}
 
-	cmd := exec.Command("./simulate_service.sh", p.Name, "5")
+	if p.Builder == nil {
+		logFile.Close()
+		return fmt.Errorf("no command builder configured for %q", p.Name)
+	}
+
+	cmd, err := p.Builder.Build(p.Service)
+	if err != nil {
+		logFile.Close()
+		return err
+	}
+
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	p.Cmd = cmd.String()
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
