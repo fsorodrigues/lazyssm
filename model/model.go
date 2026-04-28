@@ -41,10 +41,11 @@ type Model struct {
 	Config           tui.Config
 	State            tui.State
 	RunningInstances map[string]*process.Proc
+	CommandBuilder   process.CommandBuilder
 	pendingDelete    bool
 }
 
-func InitModel(cfg *tui.Config) Model {
+func InitModel(cfg *tui.Config, builder process.CommandBuilder) Model {
 	state := tui.NewState()
 
 	for _, srv := range cfg.Services {
@@ -80,6 +81,7 @@ func InitModel(cfg *tui.Config) Model {
 		Config:           *cfg,
 		State:            state,
 		RunningInstances: make(map[string]*process.Proc),
+		CommandBuilder:   builder,
 	}
 }
 
@@ -168,6 +170,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				p := &process.Proc{
 					Name:          selectedItem.Title(),
+					Service:       *selectedItem.Service,
+					Builder:       m.CommandBuilder,
 					ProcessLogDir: m.Config.ProcessLogDir,
 				}
 				if err := p.Run(); err != nil {
