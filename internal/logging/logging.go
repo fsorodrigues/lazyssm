@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultLogFile       = "~/.config/lazyssm/log/lazyssm.log"
+	DefaultLogFile       = "~/.local/state/lazyssm/lazyssm.log"
 	DefaultProcessLogDir = "~/.local/state/lazyssm/process"
 )
 
