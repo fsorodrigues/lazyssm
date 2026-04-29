@@ -54,7 +54,7 @@ func InitModel(cfg *tui.Config, builder process.CommandBuilder) Model {
 
 	state.ServiceList = list.New(
 		state.ServiceItems,
-		list.NewDefaultDelegate(),
+		tui.ServiceDelegate{},
 		state.UserInterface.PanelW,
 		state.UserInterface.ListH,
 	)
