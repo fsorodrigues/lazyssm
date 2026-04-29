@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"charm.land/bubbles/v2/list"
 )
 
@@ -47,7 +49,7 @@ type Item struct {
 func NewItem(srv *Service) Item {
 	return Item{
 		title:       srv.Name,
-		description: srv.Region,
+		description: fmt.Sprintf("[%s] %s", srv.Region, srv.Description),
 		Service:     srv,
 	}
 }

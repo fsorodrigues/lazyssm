@@ -13,11 +13,13 @@ type Config struct {
 }
 
 type Service struct {
-	Name    string `yaml:"name"`
-	Target  string `yaml:"target"`
-	Ports   Ports  `yaml:"ports"`
-	Profile string `yaml:"profile"`
-	Region  string `yaml:"region"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Type        string `yaml:"type"`
+	Target      string `yaml:"target"`
+	Ports       Ports  `yaml:"ports"`
+	Profile     string `yaml:"profile"`
+	Region      string `yaml:"region"`
 }
 
 type Ports struct {
