@@ -68,6 +68,7 @@ func (p *Proc) Run() error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	p.Cmd = cmd.String()
+	configureManagedCommand(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -102,18 +103,9 @@ func (p *Proc) Kill() {
 		return
 	}
 
-	proc, err := os.FindProcess(snapshot.PID)
-	if err != nil {
-		slog.Error("could not find process", "name", p.Name, "pid", snapshot.PID, "error", err)
+	if err := terminateManagedProcess(snapshot.PID); err != nil {
+		slog.Error("failed to kill process", "name", p.Name, "pid", snapshot.PID, "error", err)
 		return
-	}
-
-	if err := proc.Signal(os.Interrupt); err != nil {
-		slog.Warn("failed to send SIGINT; attempting SIGKILL", "name", p.Name, "pid", snapshot.PID, "error", err)
-		if err := proc.Kill(); err != nil {
-			slog.Error("failed to kill process", "name", p.Name, "pid", snapshot.PID, "error", err)
-			return
-		}
 	}
 
 	p.mu.Lock()
