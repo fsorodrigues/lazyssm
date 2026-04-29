@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -32,6 +33,20 @@ func NewConfig() *Config {
 }
 
 func ReadConfigFromFile(file string) ([]byte, error) {
+	if file == "~" || strings.HasPrefix(file, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			slog.Error("resolve user home directory", "path", file, "error", err)
+			return nil, err
+		}
+
+		if file == "~" {
+			file = homeDir
+		} else {
+			file = filepath.Join(homeDir, strings.TrimPrefix(file, "~/"))
+		}
+	}
+
 	absPath, err := filepath.Abs(file)
 	if err != nil {
 		slog.Error("resolve config file path", "path", file, "resolved_path", absPath, "error", err)
