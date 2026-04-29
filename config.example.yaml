@@ -1,0 +1,28 @@
+services:
+  - name: payments-rds-prod
+    description: Tunnel to Payments PostgreSQL through prod bastion
+    type: prod
+    target: i-0a12bc34de56f7890
+    ports:
+      port: 5432
+      localPort: 15432
+    profile: company-prod
+    region: us-west-2
+  - name: orders-redis-staging
+    description: Tunnel to Orders Redis through staging bastion
+    type: staging
+    target: i-0123abcd4567ef890
+    ports:
+      port: 6379
+      localPort: 16379
+    profile: company-staging
+    region: us-east-2
+  - name: internal-api-dev
+    description: Tunnel to internal API service running on EC2
+    type: dev
+    target: i-0fedcba9876543210
+    ports:
+      port: 8080
+      localPort: 18080
+    profile: company-dev
+    region: eu-west-1
