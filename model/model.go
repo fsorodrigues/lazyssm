@@ -21,8 +21,12 @@ var deleteKey = key.NewBinding(
 )
 
 type (
-	refreshMsg     time.Time
-	clearStatusMsg struct{}
+	refreshMsg      time.Time
+	clearStatusMsg  struct{}
+	authFinishedMsg struct {
+		service tui.Service
+		err     error
+	}
 )
 
 func clearStatusAfter(d time.Duration) tea.Cmd {
@@ -42,10 +46,14 @@ type Model struct {
 	State            tui.State
 	RunningInstances map[string]*process.Proc
 	CommandBuilder   process.CommandBuilder
+	AuthCommand      string
+	SkipAuth         bool
+	Simulate         bool
 	pendingDelete    bool
+	startInProgress  bool
 }
 
-func InitModel(cfg *tui.Config, builder process.CommandBuilder) Model {
+func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand string, skipAuth bool, simulate bool) Model {
 	state := tui.NewState()
 
 	for _, srv := range cfg.Services {
@@ -82,6 +90,9 @@ func InitModel(cfg *tui.Config, builder process.CommandBuilder) Model {
 		State:            state,
 		RunningInstances: make(map[string]*process.Proc),
 		CommandBuilder:   builder,
+		AuthCommand:      authCommand,
+		SkipAuth:         skipAuth,
+		Simulate:         simulate,
 	}
 }
 
@@ -105,8 +116,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.State.RunningList.SetSize(m.State.UserInterface.PanelW, m.State.UserInterface.ListH)
 
 	case clearStatusMsg:
+		if m.State.ActivePanel == "services" {
+			cmd := m.State.ServiceList.NewStatusMessage("")
+			return m, cmd
+		}
 		cmd := m.State.RunningList.NewStatusMessage("")
 		return m, cmd
+
+	case authFinishedMsg:
+		m.startInProgress = false
+		if msg.err != nil {
+			slog.Warn("aws-mfa preflight failed", "error", msg.err)
+			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed")
+			return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+		}
+
+		slog.Info("aws-mfa preflight succeeded")
+		return m.startService(msg.service)
 
 	case refreshMsg:
 		m.refreshRunningItems()
@@ -161,6 +187,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if m.State.ActivePanel == "services" {
+				if m.startInProgress {
+					return m, nil
+				}
+
 				selection := m.State.ServiceList.SelectedItem()
 				selectedItem, ok := selection.(tui.Item)
 				if !ok {
@@ -168,23 +198,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				p := &process.Proc{
-					Name:          selectedItem.Title(),
-					Service:       *selectedItem.Service,
-					Builder:       m.CommandBuilder,
-					ProcessLogDir: m.Config.ProcessLogDir,
-				}
-				if err := p.Run(); err != nil {
-					slog.Error("start managed process", "name", selectedItem.Title(), "error", err)
-					cmd := m.State.ServiceList.NewStatusMessage(err.Error())
-					return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
-				}
-				m.RunningInstances[selectedItem.Title()] = p
-				m.State.SetActivePanel("running")
+				if m.shouldRunAuthPreflight() {
+					slog.Info("aws-mfa preflight started")
+					statusCmd := m.State.ServiceList.NewStatusMessage("running aws-mfa")
+					authCmd, err := process.BuildAuthPreflightCommand(m.AuthCommand)
+					if err != nil {
+						slog.Error("build auth preflight command", "error", err)
+						cmd := m.State.ServiceList.NewStatusMessage("invalid auth command")
+						return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+					}
 
-				cmd := m.State.RunningList.InsertItem(len(m.State.RunningList.Items()), process.NewItem(p))
+					m.startInProgress = true
+					service := *selectedItem.Service
+					runAuthCmd := tea.ExecProcess(authCmd, func(err error) tea.Msg {
+						return authFinishedMsg{service: service, err: err}
+					})
+					return m, tea.Batch(statusCmd, runAuthCmd)
+				}
 
-				return m, cmd
+				return m.startService(*selectedItem.Service)
 			}
 		}
 	}
@@ -215,6 +247,36 @@ func (m *Model) refreshRunningItems() {
 	}
 	m.State.RunningItems = items
 	m.State.RunningList.SetItems(items)
+}
+
+func (m Model) shouldRunAuthPreflight() bool {
+	if m.Simulate {
+		return false
+	}
+	if m.SkipAuth {
+		return false
+	}
+	return true
+}
+
+func (m Model) startService(service tui.Service) (tea.Model, tea.Cmd) {
+	p := &process.Proc{
+		Name:          service.Name,
+		Service:       service,
+		Builder:       m.CommandBuilder,
+		ProcessLogDir: m.Config.ProcessLogDir,
+	}
+	if err := p.Run(); err != nil {
+		slog.Error("start managed process", "name", service.Name, "error", err)
+		cmd := m.State.ServiceList.NewStatusMessage(err.Error())
+		return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+	}
+	m.RunningInstances[service.Name] = p
+	m.State.SetActivePanel("running")
+
+	cmd := m.State.RunningList.InsertItem(len(m.State.RunningList.Items()), process.NewItem(p))
+
+	return m, cmd
 }
 
 func (m Model) View() tea.View {

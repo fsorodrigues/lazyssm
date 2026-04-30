@@ -21,6 +21,8 @@ func main() {
 	logFilePath := flag.String("log-file", logging.DefaultLogFile, "application log file path; does not affect managed process output files")
 	processLogDir := flag.String("process-log-dir", logging.DefaultProcessLogDir, "managed process output directory; does not affect the application log file")
 	simulate := flag.Bool("simulate", false, "run managed processes using the simulate service script")
+	authCommand := flag.String("auth-command", "aws-mfa", "command to run before starting AWS SSM sessions")
+	skipAuth := flag.Bool("skip-auth", false, "skip auth preflight before starting AWS SSM sessions")
 	flag.Parse()
 
 	logFile, resolvedLogPath, err := logging.Setup(*logFilePath, *debug)
@@ -68,7 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(model.InitModel(config, builder))
+	p := tea.NewProgram(model.InitModel(config, builder, *authCommand, *skipAuth, *simulate))
 	if _, err := p.Run(); err != nil {
 		slog.Error("run TUI program", "error", err)
 		fmt.Fprintf(os.Stderr, "Alas, there's been an error: %v\n", err)
