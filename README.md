@@ -23,7 +23,10 @@ You can also use `go install` if you know what you're doing.
 
 ## Configure
 
-Default configuration file path is `~/.config/lazyssm/config.yaml`.
+Default configuration file path:
+
+- Linux/macOS: `~/.config/lazyssm/config.yaml`
+- Windows: `%APPDATA%\\lazyssm\\config.yaml`
 
 Configuration uses a `services` list with the following fields per entry:
 
@@ -34,6 +37,9 @@ Configuration uses a `services` list with the following fields per entry:
 and `localPort` (local forwarded port)
 - `profile`: AWS profile to authenticate with
 - `region`: AWS region for the service
+
+Path flags (`-file`, `-log-file`, `-process-log-dir`) accept absolute paths and
+home-relative paths in these forms: `~`, `~/...`, and `~\\...`.
 
 Example configuration:
 
@@ -66,15 +72,19 @@ Launch the application by running `lazyssm` with optional CLI flags:
 
 | Flag               | Default                               | Description                                              |
 |--------------------|---------------------------------------|----------------------------------------------------------|
-| `-file`            | `~/.config/lazyssm/config.yaml`       | Path to configuration file                               |
+| `-file`            | Linux/macOS: `~/.config/lazyssm/config.yaml`<br>Windows: `%APPDATA%\\lazyssm\\config.yaml` | Path to configuration file                               |
 | `-debug`           | `false`                               | Enable debug logging                                     |
-| `-log-file`        | `~/.local/state/lazyssm/lazyssm.log`  | Path to application log file                             |
-| `-process-log-dir` | `~/.local/state/lazyssm/process`      | Directory for per-process logs                           |
+| `-log-file`        | Linux/macOS: `~/.local/state/lazyssm/lazyssm.log`<br>Windows: `%LOCALAPPDATA%\\lazyssm\\lazyssm.log` | Path to application log file                             |
+| `-process-log-dir` | Linux/macOS: `~/.local/state/lazyssm/process`<br>Windows: `%LOCALAPPDATA%\\lazyssm\\process` | Directory for per-process logs                           |
+| `-auth-command`    | `aws-mfa`                             | Command to run before starting AWS SSM sessions          |
+| `-skip-auth`       | `false`                               | Skip auth preflight before starting AWS SSM sessions     |
 | `-simulate`        | `false`                               | Use simulated services instead of AWS SSM sessions       |
 
-By default, services are started via `aws ssm start-session` using the
-`AWS-StartPortForwardingSession` document. The `-simulate` flag switches to a
-local script (`scripts/simulate_service.sh`) for development and testing.
+By default, services run an auth preflight command (`aws-mfa`) and then start
+`aws ssm start-session` using the `AWS-StartPortForwardingSession` document.
+Use `-skip-auth` to bypass preflight. The `-simulate` flag switches to a local
+script (`scripts/simulate_service.sh`) for development and testing and bypasses
+auth preflight.
 
 ---
 
@@ -85,6 +95,14 @@ The interface has two panels: available services and running services.
 Start a service from the available panel to add it to the running panel. Each
 running service corresponds to an `aws ssm start-session` port forwarding
 session (or a simulated process when using `-simulate`).
+
+Stopping a running service (`ctrl+d` then `enter`) and quitting the app (`q` or
+`ctrl+c`) both trigger managed shutdown that targets the full process tree:
+
+- Linux/macOS: sends `SIGINT` to the process group, then escalates to `SIGKILL`
+  if needed.
+- Windows: runs `taskkill /PID <pid> /T`, then escalates to
+  `taskkill /PID <pid> /T /F` if needed.
 
 ---
 
@@ -104,8 +122,16 @@ session (or a simulated process when using `-simulate`).
 
 ## Debug
 
-Application logs write to `~/.local/state/lazyssm/lazyssm.log` by default.
+Application logs write by default to:
 
-Per-process logs are stored in `~/.local/state/lazyssm/process` as `process-<name>.log`.
+- Linux/macOS: `~/.local/state/lazyssm/lazyssm.log`
+- Windows: `%LOCALAPPDATA%\\lazyssm\\lazyssm.log`
+
+Per-process logs are stored by default in:
+
+- Linux/macOS: `~/.local/state/lazyssm/process`
+- Windows: `%LOCALAPPDATA%\\lazyssm\\process`
+
+Each process log file is named `process-<name>.log`.
 
 Enable debug logging with the `-debug` CLI flag to capture additional runtime details.
