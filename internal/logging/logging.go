@@ -5,7 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"lazyssm/internal/paths"
 )
 
 const (
@@ -84,16 +85,10 @@ func ExpandPath(path string) (string, error) {
 		return "", fmt.Errorf("log path is empty")
 	}
 
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		if path == "~" {
-			return homeDir, nil
-		}
-		path = filepath.Join(homeDir, path[2:])
+	expandedPath, err := paths.ExpandHome(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	return filepath.Abs(path)
+	return filepath.Abs(filepath.Clean(expandedPath))
 }
