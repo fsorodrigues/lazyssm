@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"lazyssm/tui"
@@ -11,11 +12,18 @@ import (
 
 func NewCommandBuilder(simulate bool) (CommandBuilder, error) {
 	if simulate {
-		scriptPath, err := filepath.Abs("scripts/simulate_service.sh")
+		scriptName := "simulate_service.sh"
+		usePowerShell := false
+		if runtime.GOOS == "windows" {
+			scriptName = "simulate_service.ps1"
+			usePowerShell = true
+		}
+
+		scriptPath, err := filepath.Abs(filepath.Join("scripts", scriptName))
 		if err != nil {
 			return nil, err
 		}
-		return SimulateCommandBuilder{ScriptPath: scriptPath, Interval: 5}, nil
+		return SimulateCommandBuilder{ScriptPath: scriptPath, Interval: 5, UsePowerShell: usePowerShell}, nil
 	}
 
 	return SSMCommandBuilder{}, nil
@@ -26,8 +34,9 @@ type CommandBuilder interface {
 }
 
 type SimulateCommandBuilder struct {
-	ScriptPath string
-	Interval   int
+	ScriptPath    string
+	Interval      int
+	UsePowerShell bool
 }
 
 func (b SimulateCommandBuilder) Build(service tui.Service) (*exec.Cmd, error) {
@@ -38,6 +47,19 @@ func (b SimulateCommandBuilder) Build(service tui.Service) (*exec.Cmd, error) {
 	interval := b.Interval
 	if interval <= 0 {
 		interval = 5
+	}
+
+	if b.UsePowerShell {
+		return exec.Command(
+			"powershell",
+			"-NoProfile",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-File",
+			b.ScriptPath,
+			service.Name,
+			strconv.Itoa(interval),
+		), nil
 	}
 
 	return exec.Command(b.ScriptPath, service.Name, strconv.Itoa(interval)), nil
