@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"lazyssm/internal/logging"
+	"lazyssm/internal/paths"
 	"lazyssm/model"
 	"lazyssm/process"
 	"lazyssm/tui"
@@ -16,10 +17,10 @@ import (
 )
 
 func main() {
-	sourceFile := flag.String("file", "~/.config/lazyssm/config.yaml", "yaml file containing services configuration")
+	sourceFile := flag.String("file", paths.DefaultConfigPath(), "yaml file containing services configuration")
 	debug := flag.Bool("debug", false, "enable debug application and Bubble Tea logs")
-	logFilePath := flag.String("log-file", logging.DefaultLogFile, "application log file path; does not affect managed process output files")
-	processLogDir := flag.String("process-log-dir", logging.DefaultProcessLogDir, "managed process output directory; does not affect the application log file")
+	logFilePath := flag.String("log-file", paths.DefaultLogFilePath(), "application log file path; does not affect managed process output files")
+	processLogDir := flag.String("process-log-dir", paths.DefaultProcessLogDir(), "managed process output directory; does not affect the application log file")
 	simulate := flag.Bool("simulate", false, "run managed processes using the simulate service script")
 	authCommand := flag.String("auth-command", "aws-mfa", "command to run before starting AWS SSM sessions")
 	skipAuth := flag.Bool("skip-auth", false, "skip auth preflight before starting AWS SSM sessions")
