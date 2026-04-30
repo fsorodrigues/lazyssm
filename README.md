@@ -83,8 +83,9 @@ Launch the application by running `lazyssm` with optional CLI flags:
 By default, services run an auth preflight command (`aws-mfa`) and then start
 `aws ssm start-session` using the `AWS-StartPortForwardingSession` document.
 Use `-skip-auth` to bypass preflight. The `-simulate` flag switches to a local
-script (`scripts/simulate_service.sh`) for development and testing and bypasses
-auth preflight.
+script (`scripts/simulate_service.sh` on Linux/macOS,
+`scripts/simulate_service.ps1` on Windows) for development and testing and
+bypasses auth preflight.
 
 ---
 
