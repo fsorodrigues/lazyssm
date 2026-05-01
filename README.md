@@ -87,6 +87,10 @@ script (`scripts/simulate_service.sh` on Linux/macOS,
 `scripts/simulate_service.ps1` on Windows) for development and testing and
 bypasses auth preflight.
 
+Platform note: Linux/macOS can run the auth command inside an interactive PTY
+modal. On unsupported platforms, lazyssm falls back to running the auth command
+without the in-app PTY modal.
+
 ---
 
 ## Manage services
@@ -116,8 +120,13 @@ Stopping a running service (`ctrl+d` then `enter`) and quitting the app (`q` or
 | `ctrl+d`         | Running services       | Prompt delete for selected service  |
 | `enter`          | Running services (delete prompt) | Confirm delete |
 | `escape`         | Running services (delete prompt) | Cancel delete |
+| `enter`          | Auth modal             | Submit input to auth command        |
+| `ctrl+c`         | Auth modal             | Cancel auth command                 |
 | `q` / `ctrl+c`   | Global                 | Quit and clean up all processes     |
 | `ctrl+z`         | Global                 | Suspend the application             |
+
+While the auth modal is open, typed input is forwarded directly to the auth
+command.
 
 ---
 
