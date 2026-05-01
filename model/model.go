@@ -1,10 +1,12 @@
 package model
 
 import (
+	"bytes"
 	"log/slog"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"lazyssm/process"
 	"lazyssm/tui"
@@ -41,9 +43,6 @@ type (
 		err error
 	}
 	authSuccessProceedMsg struct{}
-	authInputErrMsg       struct {
-		err error
-	}
 )
 
 type authModalState struct {
@@ -93,12 +92,6 @@ func waitAuthExitCmd(ch <-chan error) tea.Cmd {
 			err = nil
 		}
 		return authExitMsg{err: err}
-	}
-}
-
-func writeAuthInputCmd(s *process.AuthPTYSession, b []byte) tea.Cmd {
-	return func() tea.Msg {
-		return authInputErrMsg{err: s.WriteInput(b)}
 	}
 }
 
@@ -260,12 +253,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.finishAuthSuccess()
 
-	case authInputErrMsg:
-		if msg.err != nil {
-			slog.Debug("write auth PTY input", "error", msg.err)
-		}
-		return m, nil
-
 	case refreshMsg:
 		m.refreshRunningItems()
 		return m, tickRefresh()
@@ -412,23 +399,34 @@ func (m Model) handleAuthModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	input := encodeKeyForPTY(msg)
+	input := encodeKeyForPTY(msg, m.authModal.session)
 	if len(input) == 0 || m.authModal.session == nil {
 		return m, nil
 	}
 
-	return m, writeAuthInputCmd(m.authModal.session, input)
+	if err := m.authModal.session.WriteInput(input); err != nil {
+		slog.Debug("write auth PTY input", "error", err)
+	}
+
+	return m, nil
 }
 
-func encodeKeyForPTY(msg tea.KeyPressMsg) []byte {
+func encodeKeyForPTY(msg tea.KeyPressMsg, session *process.AuthPTYSession) []byte {
 	switch msg.String() {
 	case "enter":
 		return []byte("\r")
 	case "tab":
 		return []byte("\t")
-	case "backspace", "ctrl+h":
-		return []byte{0x7f}
-	case "esc":
+	case "backspace", "backspace2", "ctrl+?", "\x7f":
+		if session == nil {
+			return []byte{0x7f}
+		}
+		return []byte{session.EraseByte()}
+	case "ctrl+h", "\b":
+		return []byte{0x08}
+	case "delete":
+		return []byte("\x1b[3~")
+	case "esc", "escape":
 		return []byte{0x1b}
 	case "ctrl+d":
 		return []byte{0x04}
@@ -471,11 +469,77 @@ func (m *Model) appendAuthOutput(chunk []byte) {
 		return
 	}
 
-	m.authModal.output = append(m.authModal.output, chunk...)
+	m.authModal.output = applyAuthOutputChunk(m.authModal.output, chunk)
 	if len(m.authModal.output) <= authOutputLimitBytes {
 		return
 	}
 	m.authModal.output = append([]byte(nil), m.authModal.output[len(m.authModal.output)-authOutputLimitBytes:]...)
+}
+
+func applyAuthOutputChunk(dst []byte, chunk []byte) []byte {
+	for i := 0; i < len(chunk); i++ {
+		switch chunk[i] {
+		case '\r':
+			if i+1 < len(chunk) && chunk[i+1] == '\n' {
+				dst = append(dst, '\n')
+				i++
+				continue
+			}
+			lineStart := bytes.LastIndexByte(dst, '\n')
+			if lineStart == -1 {
+				dst = dst[:0]
+			} else {
+				dst = dst[:lineStart+1]
+			}
+		case '\b', 0x7f:
+			dst = trimLastDisplayRune(dst)
+		case 0x1b:
+			n := ansiSequenceLen(chunk[i:])
+			if n > 0 {
+				i += n - 1
+			}
+		case '\n', '\t':
+			dst = append(dst, chunk[i])
+		default:
+			if chunk[i] < 0x20 {
+				continue
+			}
+			dst = append(dst, chunk[i])
+		}
+	}
+
+	return dst
+}
+
+func trimLastDisplayRune(dst []byte) []byte {
+	if len(dst) == 0 || dst[len(dst)-1] == '\n' {
+		return dst
+	}
+
+	_, size := utf8.DecodeLastRune(dst)
+	if size <= 0 {
+		return dst[:len(dst)-1]
+	}
+
+	return dst[:len(dst)-size]
+}
+
+func ansiSequenceLen(chunk []byte) int {
+	if len(chunk) < 2 || chunk[0] != 0x1b {
+		return 0
+	}
+
+	if chunk[1] != '[' && chunk[1] != ']' && chunk[1] != '(' && chunk[1] != ')' && chunk[1] != 'O' {
+		return 2
+	}
+
+	for i := 2; i < len(chunk); i++ {
+		if chunk[i] >= 0x40 && chunk[i] <= 0x7e {
+			return i + 1
+		}
+	}
+
+	return len(chunk)
 }
 
 func (m Model) resizeAuthPTYToModal() error {
