@@ -9,5 +9,5 @@ import (
 )
 
 func startAuthPTYCommand(command string) (*exec.Cmd, *os.File, byte, error) {
-	return nil, nil, 0, fmt.Errorf("auth PTY mode is unsupported on this platform")
+	return nil, nil, 0, fmt.Errorf(unsupportedAuthPTYMessage)
 }

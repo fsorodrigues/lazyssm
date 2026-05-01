@@ -35,6 +35,10 @@ type (
 		session *process.AuthPTYSession
 		err     error
 	}
+	authExecFinishedMsg struct {
+		service tui.Service
+		err     error
+	}
 	authOutputMsg struct {
 		chunk []byte
 		ok    bool
@@ -76,6 +80,19 @@ func startAuthSessionCmd(command string, service tui.Service) tea.Cmd {
 		session, err := process.StartAuthPTYSession(command)
 		return authSessionStartedMsg{service: service, session: session, err: err}
 	}
+}
+
+func runAuthExecCmd(command string, service tui.Service) tea.Cmd {
+	cmd, err := process.BuildAuthPreflightCommand(command)
+	if err != nil {
+		return func() tea.Msg {
+			return authExecFinishedMsg{service: service, err: err}
+		}
+	}
+
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return authExecFinishedMsg{service: service, err: err}
+	})
 }
 
 func waitAuthOutputCmd(ch <-chan []byte) tea.Cmd {
@@ -199,6 +216,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case authSessionStartedMsg:
 		if msg.err != nil {
+			if process.IsAuthPTYUnsupported(msg.err) {
+				m.closeAuthModal()
+				return m, runAuthExecCmd(m.AuthCommand, msg.service)
+			}
+
 			m.startInProgress = false
 			m.closeAuthModal()
 			slog.Warn("aws-mfa preflight failed", "error", msg.err)
@@ -246,6 +268,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendAuthOutput([]byte("\r\naws-mfa succeeded\r\n"))
 		wait := authModalMinVisible - time.Since(m.authModal.started)
 		return m, authSuccessProceedCmd(wait)
+
+	case authExecFinishedMsg:
+		m.startInProgress = false
+		if msg.err != nil {
+			slog.Warn("aws-mfa preflight failed", "error", msg.err)
+			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed")
+			return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+		}
+
+		return m.startService(msg.service)
 
 	case authSuccessProceedMsg:
 		if !m.authModal.active {
