@@ -11,6 +11,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -26,6 +27,10 @@ type (
 	authFinishedMsg struct {
 		service tui.Service
 		err     error
+	}
+	deleteFinishedMsg struct {
+		name string
+		err  error
 	}
 )
 
@@ -51,6 +56,8 @@ type Model struct {
 	Simulate         bool
 	pendingDelete    bool
 	startInProgress  bool
+	deleting         map[string]bool
+	spinner          spinner.Model
 }
 
 func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand string, skipAuth bool, simulate bool) Model {
@@ -93,6 +100,11 @@ func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand stri
 		AuthCommand:      authCommand,
 		SkipAuth:         skipAuth,
 		Simulate:         simulate,
+		deleting:         make(map[string]bool),
+		spinner: spinner.New(
+			spinner.WithSpinner(spinner.MiniDot),
+			spinner.WithStyle(lipgloss.NewStyle()),
+		),
 	}
 }
 
@@ -102,9 +114,15 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Cleanup() {
 	for name, p := range m.RunningInstances {
+		if m.deleting[name] {
+			slog.Info("skipping cleanup for process being deleted async", "name", name)
+			continue
+		}
 		snapshot := p.Snapshot()
 		slog.Info("cleaning up process", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
-		p.Kill()
+		if err := p.Kill(); err != nil {
+			slog.Error("cleanup: failed to kill process", "name", name, "error", err)
+		}
 	}
 }
 
@@ -138,6 +156,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshRunningItems()
 		return m, tickRefresh()
 
+	case spinner.TickMsg:
+		var spinCmd tea.Cmd
+		m.spinner, spinCmd = m.spinner.Update(msg)
+		m.refreshRunningItems()
+		if len(m.deleting) > 0 {
+			return m, spinCmd
+		}
+		return m, nil
+
+	case deleteFinishedMsg:
+		name := msg.name
+		delete(m.deleting, name)
+		if msg.err != nil {
+			slog.Error("failed to delete process", "name", name, "error", msg.err)
+			statusCmd := m.State.RunningList.NewStatusMessage("failed to delete " + name)
+			return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
+		}
+		delete(m.RunningInstances, name)
+		items := m.State.RunningList.Items()
+		for i, item := range items {
+			if item.FilterValue() == name {
+				m.State.RunningList.RemoveItem(i)
+				m.State.RunningList.Select(max(i-1, 0))
+				break
+			}
+		}
+		if len(m.RunningInstances) == 0 {
+			m.State.SetActivePanel("services")
+		}
+		statusCmd := m.State.RunningList.NewStatusMessage("deleted " + name)
+		return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
+
 	case tea.KeyPressMsg:
 		switch {
 		case msg.String() == "ctrl+c" || (msg.String() == "q" && !m.pendingDelete):
@@ -169,21 +219,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingDelete = false
 				selection := m.State.RunningList.SelectedItem()
 				if selection != nil {
-					idx := m.State.RunningList.GlobalIndex()
 					name := selection.FilterValue()
+					if m.deleting[name] {
+						break
+					}
 					if p, ok := m.RunningInstances[name]; ok {
 						snapshot := p.Snapshot()
-						slog.Info("removing process from panel", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
-						p.Kill()
-						delete(m.RunningInstances, name)
+						slog.Info("async delete started", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
+						m.deleting[name] = true
+						startedSpinner := len(m.deleting) == 1
+						statusCmd := m.State.RunningList.NewStatusMessage("deleting " + name + "...")
+						killCmd := func() tea.Msg {
+							err := p.Kill()
+							return deleteFinishedMsg{name: name, err: err}
+						}
+						cmds := []tea.Cmd{statusCmd, killCmd}
+						if startedSpinner {
+							cmds = append(cmds, m.spinner.Tick)
+						}
+						return m, tea.Batch(cmds...)
 					}
-					m.State.RunningList.RemoveItem(idx)
-					m.State.RunningList.Select(max(idx-1, 0))
-					statusCmd := m.State.RunningList.NewStatusMessage("deleted " + name)
-					if len(m.RunningInstances) == 0 {
-						m.State.SetActivePanel("services")
-					}
-					return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 				}
 			}
 			if m.State.ActivePanel == "services" {
@@ -243,7 +298,12 @@ func (m *Model) refreshRunningItems() {
 	for _, name := range names {
 		p := m.RunningInstances[name]
 		p.Refresh()
-		items = append(items, process.NewItem(p))
+		item := process.NewItem(p)
+		if m.deleting[name] {
+			item.Deleting = true
+			item.Frame = m.spinner.View()
+		}
+		items = append(items, item)
 	}
 	m.State.RunningItems = items
 	m.State.RunningList.SetItems(items)
