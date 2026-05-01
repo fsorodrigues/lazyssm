@@ -15,6 +15,7 @@ type AuthPTYSession struct {
 	command string
 	cmd     *exec.Cmd
 	ptyFile *os.File
+	erase   byte
 
 	outputCh chan []byte
 	exitCh   chan error
@@ -29,8 +30,7 @@ func StartAuthPTYSession(command string) (*AuthPTYSession, error) {
 		return nil, fmt.Errorf("auth command is empty")
 	}
 
-	cmd := exec.Command(trimmed)
-	f, err := pty.Start(cmd)
+	cmd, f, erase, err := startAuthPTYCommand(trimmed)
 	if err != nil {
 		return nil, err
 	}
@@ -41,6 +41,7 @@ func StartAuthPTYSession(command string) (*AuthPTYSession, error) {
 		ptyFile:  f,
 		outputCh: make(chan []byte, 128),
 		exitCh:   make(chan error, 1),
+		erase:    erase,
 	}
 
 	go session.readLoop()
@@ -55,6 +56,14 @@ func (s *AuthPTYSession) Output() <-chan []byte {
 
 func (s *AuthPTYSession) Done() <-chan error {
 	return s.exitCh
+}
+
+func (s *AuthPTYSession) EraseByte() byte {
+	if s == nil || s.erase == 0 {
+		return 0x7f
+	}
+
+	return s.erase
 }
 
 func (s *AuthPTYSession) WriteInput(data []byte) error {
