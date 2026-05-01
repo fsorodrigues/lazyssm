@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	StatusRunning = "running"
-	StatusExited  = "exited"
-	StatusFailed  = "failed"
-	StatusKilled  = "killed"
+	StatusRunning  = "running"
+	StatusExited   = "exited"
+	StatusFailed   = "failed"
+	StatusKilled   = "killed"
+	StatusDeleting = "deleting"
 )
 
 type Proc struct {
@@ -91,21 +92,21 @@ func (p *Proc) Run() error {
 	return nil
 }
 
-func (p *Proc) Kill() {
+func (p *Proc) Kill() error {
 	snapshot := p.Snapshot()
 	if snapshot.PID == 0 {
 		slog.Warn("no PID set for process; nothing to kill", "name", p.Name)
-		return
+		return nil
 	}
 
 	if snapshot.Status != StatusRunning {
 		slog.Info("process already stopped", "name", p.Name, "pid", snapshot.PID, "status", snapshot.Status)
-		return
+		return nil
 	}
 
 	if err := terminateManagedProcess(snapshot.PID); err != nil {
 		slog.Error("failed to kill process", "name", p.Name, "pid", snapshot.PID, "error", err)
-		return
+		return err
 	}
 
 	p.mu.Lock()
@@ -114,6 +115,7 @@ func (p *Proc) Kill() {
 	p.mu.Unlock()
 
 	slog.Info("process killed", "name", p.Name, "pid", snapshot.PID)
+	return nil
 }
 
 func (p *Proc) Refresh() Snapshot {
@@ -235,6 +237,8 @@ type Item struct {
 	title       string
 	description string
 	Process     *Proc
+	Deleting    bool
+	Frame       string
 }
 
 func NewItem(proc *Proc) Item {

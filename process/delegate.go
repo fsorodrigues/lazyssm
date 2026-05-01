@@ -37,6 +37,11 @@ var (
 			Bold(true).
 			Background(lipgloss.Red).
 			Foreground(lipgloss.Color("#3C3C3C"))
+	deletingStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			Bold(true).
+			Background(lipgloss.Color("205")).
+			Foreground(lipgloss.Color("#3C3C3C"))
 )
 
 // RunningDelegate is a custom ItemDelegate for the running services list.
@@ -72,13 +77,18 @@ func (d RunningDelegate) Render(w io.Writer, m list.Model, index int, item list.
 
 	// Line 1: name | PID | status
 	var statusTag string
-	switch status {
-	case "running":
-		statusTag = runningStyle.Render(status)
-	case "exited":
-		statusTag = exitedStyle.Render(status)
-	default:
-		statusTag = tagStyle.Render(status)
+	if procItem.Deleting {
+		statusTag = deletingStyle.Render("deleting " + procItem.Frame)
+		output = "stopping process tree..."
+	} else {
+		switch status {
+		case "running":
+			statusTag = runningStyle.Render(status)
+		case "exited":
+			statusTag = exitedStyle.Render(status)
+		default:
+			statusTag = tagStyle.Render(status)
+		}
 	}
 	line1 := fmt.Sprintf("%s  pid:%d  %s", procItem.Title(), pid, statusTag)
 
