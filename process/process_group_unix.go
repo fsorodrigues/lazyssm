@@ -24,11 +24,32 @@ func terminateManagedProcess(pid int) error {
 		return fmt.Errorf("invalid process id %d", pid)
 	}
 
-	if err := signalProcessGroup(pid, syscall.SIGINT); err != nil {
+	exited, err := terminateManagedProcessGracefully(pid)
+	if err != nil {
 		return err
 	}
-	if waitForProcessGroupExit(pid, gracefulShutdownTimeout) {
+	if exited {
 		return nil
+	}
+
+	return terminateManagedProcessForce(pid)
+}
+
+func terminateManagedProcessGracefully(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, fmt.Errorf("invalid process id %d", pid)
+	}
+
+	if err := signalProcessGroup(pid, syscall.SIGINT); err != nil {
+		return false, err
+	}
+
+	return waitForProcessGroupExit(pid, gracefulShutdownTimeout), nil
+}
+
+func terminateManagedProcessForce(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid process id %d", pid)
 	}
 
 	if err := signalProcessGroup(pid, syscall.SIGKILL); err != nil {
