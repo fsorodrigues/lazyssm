@@ -72,10 +72,15 @@ func main() {
 	}
 
 	p := tea.NewProgram(model.InitModel(config, builder, *authCommand, *skipAuth, *simulate))
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		slog.Error("run TUI program", "error", err)
 		fmt.Fprintf(os.Stderr, "Alas, there's been an error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if appModel, ok := finalModel.(model.Model); ok {
+		appModel.Cleanup()
 	}
 
 	slog.Info("application stopped")

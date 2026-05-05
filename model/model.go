@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,7 @@ import (
 const (
 	authOutputLimitBytes = 64 * 1024
 	authModalMinVisible  = 1200 * time.Millisecond
+	shutdownMaxWait      = 5 * time.Second
 )
 
 var deleteKey = key.NewBinding(
@@ -52,6 +54,10 @@ type (
 		name string
 		err  error
 	}
+	shutdownGracefulFinishedMsg struct {
+		failed map[string]error
+	}
+	shutdownDeadlineMsg struct{}
 )
 
 type authModalState struct {
@@ -140,6 +146,10 @@ type Model struct {
 	authModal        authModalState
 	deleting         map[string]bool
 	spinner          spinner.Model
+	shuttingDown     bool
+	shutdownStarted  time.Time
+	shutdownPending  map[string]*process.Proc
+	shutdownFailed   map[string]error
 }
 
 func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand string, skipAuth bool, simulate bool) Model {
@@ -183,6 +193,8 @@ func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand stri
 		SkipAuth:         skipAuth,
 		Simulate:         simulate,
 		deleting:         make(map[string]bool),
+		shutdownPending:  make(map[string]*process.Proc),
+		shutdownFailed:   make(map[string]error),
 		spinner: spinner.New(
 			spinner.WithSpinner(spinner.MiniDot),
 			spinner.WithStyle(lipgloss.NewStyle()),
@@ -195,10 +207,41 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Cleanup() {
+	m.forceCleanup()
+}
+
+func startGracefulShutdownCmd(procs map[string]*process.Proc) tea.Cmd {
+	return func() tea.Msg {
+		failed := make(map[string]error)
+		for name, p := range procs {
+			if p == nil {
+				continue
+			}
+			exited, err := p.StopGracefully()
+			if err != nil {
+				failed[name] = err
+				continue
+			}
+			if !exited {
+				failed[name] = nil
+			}
+		}
+		return shutdownGracefulFinishedMsg{failed: failed}
+	}
+}
+
+func shutdownDeadlineCmd() tea.Cmd {
+	return tea.Tick(shutdownMaxWait, func(time.Time) tea.Msg {
+		return shutdownDeadlineMsg{}
+	})
+}
+
+func (m *Model) forceCleanup() {
+	m.startInProgress = false
 	if m.authModal.session != nil {
 		_ = m.authModal.session.Interrupt()
-		_ = m.authModal.session.Close()
 	}
+	m.closeAuthModal()
 
 	for name, p := range m.RunningInstances {
 		if m.deleting[name] {
@@ -207,7 +250,7 @@ func (m Model) Cleanup() {
 		}
 		snapshot := p.Snapshot()
 		slog.Info("cleaning up process", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
-		if err := p.Kill(); err != nil {
+		if err := p.ForceKill(); err != nil {
 			slog.Error("cleanup: failed to kill process", "name", name, "error", err)
 		}
 	}
@@ -339,15 +382,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		statusCmd := m.State.RunningList.NewStatusMessage("deleted " + name)
 		return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 
+	case shutdownGracefulFinishedMsg:
+		m.shutdownFailed = msg.failed
+		if len(msg.failed) == 0 {
+			return m, tea.Quit
+		}
+		return m, nil
+
+	case shutdownDeadlineMsg:
+		return m, tea.Quit
+
 	case tea.KeyPressMsg:
 		if m.authModal.active {
 			return m.handleAuthModalKey(msg)
 		}
+		if m.shuttingDown {
+			return m, nil
+		}
 
 		switch {
 		case msg.String() == "ctrl+c" || (msg.String() == "q" && !m.pendingDelete):
-			m.Cleanup()
-			return m, tea.Quit
+			return m.beginShutdown()
 		case msg.String() == "ctrl+z":
 			return m, tea.Suspend
 		case msg.String() == "tab":
@@ -429,6 +484,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m Model) beginShutdown() (tea.Model, tea.Cmd) {
+	m.shuttingDown = true
+	m.shutdownStarted = time.Now()
+	m.shutdownPending = make(map[string]*process.Proc)
+	m.shutdownFailed = make(map[string]error)
+	m.startInProgress = false
+
+	if m.authModal.session != nil {
+		_ = m.authModal.session.Interrupt()
+	}
+	m.closeAuthModal()
+
+	for name, p := range m.RunningInstances {
+		if m.deleting[name] || p == nil {
+			continue
+		}
+		m.shutdownPending[name] = p
+	}
+
+	if len(m.shutdownPending) == 0 {
+		return m, tea.Quit
+	}
+
+	return m, tea.Batch(startGracefulShutdownCmd(m.shutdownPending), shutdownDeadlineCmd())
 }
 
 func (m *Model) refreshRunningItems() {
@@ -699,6 +780,9 @@ func authCommandLabel(command string) string {
 }
 
 func (m Model) View() tea.View {
+	if m.shuttingDown {
+		return m.shutdownView()
+	}
 	if m.authModal.active {
 		return m.authModalView()
 	}
@@ -737,6 +821,52 @@ func (m Model) View() tea.View {
 	v := tea.NewView(s.String())
 	v.AltScreen = true
 
+	return v
+}
+
+func (m Model) shutdownView() tea.View {
+	w := m.State.UserInterface.Width
+	h := m.State.UserInterface.Height
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+
+	bodyW := min(max(w*2/3, 40), max(w-4, 1))
+	bodyH := min(max(h/3, 8), max(h-2, 1))
+
+	message := "Winding down processes. Waiting for graceful shutdown..."
+	if len(m.shutdownFailed) > 0 {
+		message = "Winding down processes. Force cleanup will continue when the 5s limit is reached."
+	}
+
+	remaining := shutdownMaxWait - time.Since(m.shutdownStarted)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	lines := []string{
+		lipgloss.NewStyle().Bold(true).Render("Shutting down lazyssm"),
+		"",
+		message,
+		"",
+		"Time remaining: " + remaining.Round(time.Second).String(),
+	}
+	if count := len(m.shutdownPending); count > 0 {
+		lines = append(lines, "Managed processes: "+strconv.Itoa(count))
+	}
+	if count := len(m.shutdownFailed); count > 0 {
+		lines = append(lines, "Still running: "+strconv.Itoa(count))
+	}
+
+	body := lipgloss.NewStyle().Width(max(bodyW-4, 1)).Height(max(bodyH-4, 1)).Align(lipgloss.Left, lipgloss.Top).Render(strings.Join(lines, "\n"))
+	card := tui.PanelStyle(bodyW, bodyH, true).Render(body)
+	view := lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, card)
+
+	v := tea.NewView(view)
+	v.AltScreen = true
 	return v
 }
 
