@@ -5,6 +5,7 @@ package process
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -28,7 +29,7 @@ func terminateManagedProcess(pid int) error {
 	}
 
 	if err := taskkillProcessTree(pid, false); err != nil {
-		return fmt.Errorf("graceful taskkill failed for process tree %d: %w", pid, err)
+		slog.Debug("graceful taskkill attempted", "pid", pid, "error", err)
 	}
 
 	exited, err := waitForProcessExit(pid, gracefulShutdownTimeout)
