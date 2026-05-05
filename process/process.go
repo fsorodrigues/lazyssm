@@ -35,7 +35,8 @@ type Proc struct {
 	Service       tui.Service
 	Builder       CommandBuilder
 
-	mu sync.RWMutex
+	mu         sync.RWMutex
+	shutdownMu sync.Mutex
 }
 
 type Snapshot struct {
@@ -93,6 +94,58 @@ func (p *Proc) Run() error {
 }
 
 func (p *Proc) Kill() error {
+	exited, err := p.StopGracefully()
+	if err != nil {
+		return err
+	}
+	if exited {
+		return nil
+	}
+
+	return p.ForceKill()
+}
+
+func (p *Proc) StopGracefully() (bool, error) {
+	snapshot := p.Snapshot()
+	if snapshot.PID == 0 {
+		slog.Warn("no PID set for process; nothing to kill", "name", p.Name)
+		return true, nil
+	}
+
+	if snapshot.Status != StatusRunning {
+		slog.Info("process already stopped", "name", p.Name, "pid", snapshot.PID, "status", snapshot.Status)
+		return true, nil
+	}
+
+	p.shutdownMu.Lock()
+	defer p.shutdownMu.Unlock()
+
+	snapshot = p.Snapshot()
+	if snapshot.PID == 0 {
+		slog.Warn("no PID set for process; nothing to stop", "name", p.Name)
+		return true, nil
+	}
+	if snapshot.Status != StatusRunning {
+		slog.Info("process already stopped", "name", p.Name, "pid", snapshot.PID, "status", snapshot.Status)
+		return true, nil
+	}
+
+	exited, err := terminateManagedProcessGracefully(snapshot.PID)
+	if err != nil {
+		slog.Error("failed graceful shutdown", "name", p.Name, "pid", snapshot.PID, "error", err)
+		return false, err
+	}
+	if !exited {
+		slog.Info("process still running after graceful shutdown", "name", p.Name, "pid", snapshot.PID)
+		return false, nil
+	}
+
+	p.markKilled()
+	slog.Info("process stopped gracefully", "name", p.Name, "pid", snapshot.PID)
+	return true, nil
+}
+
+func (p *Proc) ForceKill() error {
 	snapshot := p.Snapshot()
 	if snapshot.PID == 0 {
 		slog.Warn("no PID set for process; nothing to kill", "name", p.Name)
@@ -104,16 +157,25 @@ func (p *Proc) Kill() error {
 		return nil
 	}
 
-	if err := terminateManagedProcess(snapshot.PID); err != nil {
+	p.shutdownMu.Lock()
+	defer p.shutdownMu.Unlock()
+
+	snapshot = p.Snapshot()
+	if snapshot.PID == 0 {
+		slog.Warn("no PID set for process; nothing to kill", "name", p.Name)
+		return nil
+	}
+	if snapshot.Status != StatusRunning {
+		slog.Info("process already stopped", "name", p.Name, "pid", snapshot.PID, "status", snapshot.Status)
+		return nil
+	}
+
+	if err := terminateManagedProcessForce(snapshot.PID); err != nil {
 		slog.Error("failed to kill process", "name", p.Name, "pid", snapshot.PID, "error", err)
 		return err
 	}
 
-	p.mu.Lock()
-	p.Status = StatusKilled
-	p.closeLogFileLocked()
-	p.mu.Unlock()
-
+	p.markKilled()
 	slog.Info("process killed", "name", p.Name, "pid", snapshot.PID)
 	return nil
 }
@@ -191,6 +253,13 @@ func (p *Proc) closeLogFileLocked() {
 		p.LogFile.Close()
 		p.LogFile = nil
 	}
+}
+
+func (p *Proc) markKilled() {
+	p.mu.Lock()
+	p.Status = StatusKilled
+	p.closeLogFileLocked()
+	p.mu.Unlock()
 }
 
 func (p *Proc) refreshOutput() string {

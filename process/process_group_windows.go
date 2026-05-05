@@ -5,6 +5,7 @@ package process
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -27,23 +28,45 @@ func terminateManagedProcess(pid int) error {
 		return fmt.Errorf("invalid process id %d", pid)
 	}
 
+	exited, err := terminateManagedProcessGracefully(pid)
+	if err != nil {
+		return err
+	}
+	if exited {
+		return nil
+	}
+
+	return terminateManagedProcessForce(pid)
+}
+
+func terminateManagedProcessGracefully(pid int) (bool, error) {
+	if pid <= 0 {
+		return false, fmt.Errorf("invalid process id %d", pid)
+	}
+
 	if err := taskkillProcessTree(pid, false); err != nil {
-		return fmt.Errorf("graceful taskkill failed for process tree %d: %w", pid, err)
+		slog.Debug("graceful taskkill attempted", "pid", pid, "error", err)
 	}
 
 	exited, err := waitForProcessExit(pid, gracefulShutdownTimeout)
 	if err != nil {
-		return fmt.Errorf("wait for graceful shutdown of process %d: %w", pid, err)
+		return false, fmt.Errorf("wait for graceful shutdown of process %d: %w", pid, err)
 	}
-	if exited {
-		return nil
+
+	return exited, nil
+
+}
+
+func terminateManagedProcessForce(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid process id %d", pid)
 	}
 
 	if err := taskkillProcessTree(pid, true); err != nil {
 		return fmt.Errorf("forced taskkill failed for process tree %d: %w", pid, err)
 	}
 
-	exited, err = waitForProcessExit(pid, gracefulShutdownTimeout)
+	exited, err := waitForProcessExit(pid, gracefulShutdownTimeout)
 	if err != nil {
 		return fmt.Errorf("wait for forced shutdown of process %d: %w", pid, err)
 	}
