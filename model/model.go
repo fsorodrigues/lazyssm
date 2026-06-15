@@ -452,6 +452,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if m.State.ActivePanel == "services" {
+				// While the user is actively typing a filter query, Enter should
+				// confirm/close the filter — not start a service. Let the event
+				// fall through to ServiceList.Update so the list handles it.
+				if m.State.ServiceList.FilterState() == list.Filtering {
+					break
+				}
+
 				if m.startInProgress || m.authModal.active {
 					return m, nil
 				}
