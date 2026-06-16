@@ -417,7 +417,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd := m.State.RunningList.NewStatusMessage("press enter to confirm, esc to cancel")
 				return m, cmd
 			}
-		case msg.String() == "escape":
+		case msg.String() == "escape" || msg.String() == "esc":
 			if m.pendingDelete {
 				m.pendingDelete = false
 				m.State.RunningList.StatusMessageLifetime = time.Second
