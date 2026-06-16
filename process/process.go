@@ -307,6 +307,7 @@ type Item struct {
 	description string
 	Process     *Proc
 	Deleting    bool
+	PendingDelete bool
 	Frame       string
 }
 

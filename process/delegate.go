@@ -42,6 +42,11 @@ var (
 			Bold(true).
 			Background(lipgloss.Color("205")).
 			Foreground(lipgloss.Color("#3C3C3C"))
+	pendingDeleteStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			Bold(true).
+			Background(lipgloss.Color("214")).
+			Foreground(lipgloss.Color("#3C3C3C"))
 )
 
 // RunningDelegate is a custom ItemDelegate for the running services list.
@@ -78,8 +83,11 @@ func (d RunningDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	// Line 1: name | PID | status
 	var statusTag string
 	if procItem.Deleting {
-		statusTag = deletingStyle.Render("deleting " + procItem.Frame)
+		statusTag = deletingStyle.Render("stopping " + procItem.Frame)
 		output = "stopping process tree..."
+	} else if procItem.PendingDelete {
+		statusTag = pendingDeleteStyle.Render("pending stop")
+		output = "press enter to stop, esc to cancel"
 	} else {
 		switch status {
 		case "running":
@@ -101,13 +109,23 @@ func (d RunningDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		output = "(no output)"
 	}
 
+	selectedLine1Style := selectedStyle
+	line2Style := outputStyle
+	selectedLine2Style := selectedOutputStyle
+	if procItem.PendingDelete {
+		pendingColor := lipgloss.Color("214")
+		selectedLine1Style = selectedLine1Style.BorderForeground(pendingColor)
+		line2Style = line2Style.Foreground(pendingColor)
+		selectedLine2Style = selectedLine2Style.Foreground(pendingColor).BorderForeground(pendingColor)
+	}
+
 	if index == m.Index() {
-		line1 = selectedStyle.Render(line1)
-		line2 := selectedOutputStyle.Render("→ " + output)
+		line1 = selectedLine1Style.Render(line1)
+		line2 := selectedLine2Style.Render("→ " + output)
 		fmt.Fprintf(w, "%s\n%s", line1, line2)
 	} else {
 		line1 = itemStyle.Render(line1)
-		line2 := outputStyle.Render(output)
+		line2 := line2Style.Render(output)
 		fmt.Fprintf(w, "%s\n%s", line1, line2)
 	}
 }

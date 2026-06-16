@@ -27,7 +27,7 @@ const (
 
 var deleteKey = key.NewBinding(
 	key.WithKeys("ctrl+d"),
-	key.WithHelp("ctrl+d", "delete"),
+	key.WithHelp("ctrl+d", "stop"),
 )
 
 type (
@@ -134,25 +134,32 @@ func authSuccessProceedCmd(d time.Duration) tea.Cmd {
 }
 
 type Model struct {
-	Config           tui.Config
-	State            tui.State
-	RunningInstances map[string]*process.Proc
-	CommandBuilder   process.CommandBuilder
-	AuthCommand      string
-	SkipAuth         bool
-	Simulate         bool
-	pendingDelete    bool
-	startInProgress  bool
-	authModal        authModalState
-	deleting         map[string]bool
-	spinner          spinner.Model
-	shuttingDown     bool
-	shutdownStarted  time.Time
-	shutdownPending  map[string]*process.Proc
-	shutdownFailed   map[string]error
+	Config            tui.Config
+	State             tui.State
+	RunningInstances  map[string]*process.Proc
+	CommandBuilder    process.CommandBuilder
+	AuthCommand       string
+	SkipAuth          bool
+	Simulate          bool
+	pendingDelete     bool
+	pendingDeleteName string
+	startInProgress   bool
+	authModal         authModalState
+	deleting          map[string]bool
+	spinner           spinner.Model
+	shuttingDown      bool
+	shutdownStarted   time.Time
+	shutdownPending   map[string]*process.Proc
+	shutdownFailed    map[string]error
 }
 
-func InitModel(cfg *tui.Config, builder process.CommandBuilder, authCommand string, skipAuth bool, simulate bool) Model {
+func InitModel(
+	cfg *tui.Config,
+	builder process.CommandBuilder,
+	authCommand string,
+	skipAuth bool,
+	simulate bool,
+) Model {
 	state := tui.NewState()
 
 	for _, srv := range cfg.Services {
@@ -245,11 +252,19 @@ func (m *Model) forceCleanup() {
 
 	for name, p := range m.RunningInstances {
 		if m.deleting[name] {
-			slog.Info("skipping cleanup for process being deleted async", "name", name)
+			slog.Info("skipping cleanup for process being stopped async", "name", name)
 			continue
 		}
 		snapshot := p.Snapshot()
-		slog.Info("cleaning up process", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
+		slog.Info(
+			"cleaning up process",
+			"name",
+			name,
+			"pid",
+			snapshot.PID,
+			"status",
+			snapshot.Status,
+		)
 		if err := p.ForceKill(); err != nil {
 			slog.Error("cleanup: failed to kill process", "name", name, "error", err)
 		}
@@ -363,8 +378,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		name := msg.name
 		delete(m.deleting, name)
 		if msg.err != nil {
-			slog.Error("failed to delete process", "name", name, "error", msg.err)
-			statusCmd := m.State.RunningList.NewStatusMessage("failed to delete " + name)
+			slog.Error("failed to stop process", "name", name, "error", msg.err)
+			statusCmd := m.State.RunningList.NewStatusMessage("failed to stop " + name)
 			return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 		}
 		delete(m.RunningInstances, name)
@@ -379,7 +394,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.RunningInstances) == 0 {
 			m.State.SetActivePanel("services")
 		}
-		statusCmd := m.State.RunningList.NewStatusMessage("deleted " + name)
+		statusCmd := m.State.RunningList.NewStatusMessage("stopped " + name)
 		return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 
 	case shutdownGracefulFinishedMsg:
@@ -412,44 +427,80 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.State.CircleActivePanel()
 		case key.Matches(msg, deleteKey):
 			if m.State.ActivePanel == "running" && len(m.State.RunningList.Items()) > 0 {
+				selection := m.State.RunningList.SelectedItem()
+				if selection == nil {
+					break
+				}
+
+				name := selection.FilterValue()
 				m.pendingDelete = true
+				m.pendingDeleteName = name
+				m.refreshRunningItems()
 				m.State.RunningList.StatusMessageLifetime = time.Hour
-				cmd := m.State.RunningList.NewStatusMessage("press enter to confirm, esc to cancel")
+				cmd := m.State.RunningList.NewStatusMessage(
+					"stop " + name + "? enter confirm, esc cancel",
+				)
 				return m, cmd
 			}
 		case msg.String() == "escape" || msg.String() == "esc":
 			if m.pendingDelete {
 				m.pendingDelete = false
+				m.pendingDeleteName = ""
+				m.refreshRunningItems()
 				m.State.RunningList.StatusMessageLifetime = time.Second
 				cmd := m.State.RunningList.NewStatusMessage("")
 				return m, cmd
 			}
 		case msg.String() == "enter":
 			if m.pendingDelete && m.State.ActivePanel == "running" {
+				name := m.pendingDeleteName
 				m.pendingDelete = false
-				selection := m.State.RunningList.SelectedItem()
-				if selection != nil {
-					name := selection.FilterValue()
-					if m.deleting[name] {
-						break
-					}
-					if p, ok := m.RunningInstances[name]; ok {
-						snapshot := p.Snapshot()
-						slog.Info("async delete started", "name", name, "pid", snapshot.PID, "status", snapshot.Status)
-						m.deleting[name] = true
-						startedSpinner := len(m.deleting) == 1
-						statusCmd := m.State.RunningList.NewStatusMessage("deleting " + name + "...")
-						killCmd := func() tea.Msg {
-							err := p.Kill()
-							return deleteFinishedMsg{name: name, err: err}
-						}
-						cmds := []tea.Cmd{statusCmd, killCmd}
-						if startedSpinner {
-							cmds = append(cmds, m.spinner.Tick)
-						}
-						return m, tea.Batch(cmds...)
+				m.pendingDeleteName = ""
+
+				if name == "" {
+					selection := m.State.RunningList.SelectedItem()
+					if selection != nil {
+						name = selection.FilterValue()
 					}
 				}
+
+				if name == "" {
+					break
+				}
+
+				if m.deleting[name] {
+					break
+				}
+
+				if p, ok := m.RunningInstances[name]; ok {
+					snapshot := p.Snapshot()
+					slog.Info(
+						"async stop started",
+						"name",
+						name,
+						"pid",
+						snapshot.PID,
+						"status",
+						snapshot.Status,
+					)
+					m.deleting[name] = true
+					m.refreshRunningItems()
+					startedSpinner := len(m.deleting) == 1
+					statusCmd := m.State.RunningList.NewStatusMessage("stopping " + name + "...")
+					killCmd := func() tea.Msg {
+						err := p.Kill()
+						return deleteFinishedMsg{name: name, err: err}
+					}
+					cmds := []tea.Cmd{statusCmd, killCmd}
+					if startedSpinner {
+						cmds = append(cmds, m.spinner.Tick)
+					}
+					return m, tea.Batch(cmds...)
+				}
+
+				m.refreshRunningItems()
+				statusCmd := m.State.RunningList.NewStatusMessage(name + " is no longer running")
+				return m, tea.Batch(statusCmd, clearStatusAfter(2*time.Second))
 			}
 			if m.State.ActivePanel == "services" {
 				// While the user is actively typing a filter query, Enter should
@@ -498,6 +549,8 @@ func (m Model) beginShutdown() (tea.Model, tea.Cmd) {
 	m.shutdownStarted = time.Now()
 	m.shutdownPending = make(map[string]*process.Proc)
 	m.shutdownFailed = make(map[string]error)
+	m.pendingDelete = false
+	m.pendingDeleteName = ""
 	m.startInProgress = false
 
 	if m.authModal.session != nil {
@@ -534,6 +587,8 @@ func (m *Model) refreshRunningItems() {
 		if m.deleting[name] {
 			item.Deleting = true
 			item.Frame = m.spinner.View()
+		} else if m.pendingDelete && m.pendingDeleteName == name {
+			item.PendingDelete = true
 		}
 		items = append(items, item)
 	}
@@ -653,7 +708,9 @@ func (m *Model) appendAuthOutput(chunk []byte) {
 	if len(m.authModal.output) <= authOutputLimitBytes {
 		return
 	}
-	m.authModal.output = append([]byte(nil), m.authModal.output[len(m.authModal.output)-authOutputLimitBytes:]...)
+	m.authModal.output = append(
+		[]byte(nil),
+		m.authModal.output[len(m.authModal.output)-authOutputLimitBytes:]...)
 }
 
 func applyAuthOutputChunk(dst []byte, chunk []byte) []byte {
@@ -868,7 +925,11 @@ func (m Model) shutdownView() tea.View {
 		lines = append(lines, "Still running: "+strconv.Itoa(count))
 	}
 
-	body := lipgloss.NewStyle().Width(max(bodyW-4, 1)).Height(max(bodyH-4, 1)).Align(lipgloss.Left, lipgloss.Top).Render(strings.Join(lines, "\n"))
+	body := lipgloss.NewStyle().
+		Width(max(bodyW-4, 1)).
+		Height(max(bodyH-4, 1)).
+		Align(lipgloss.Left, lipgloss.Top).
+		Render(strings.Join(lines, "\n"))
 	card := tui.PanelStyle(bodyW, bodyH, true).Render(body)
 	view := lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, card)
 
@@ -900,7 +961,11 @@ func (m Model) authModalView() tea.View {
 	title := m.authModal.commandLabel + " authentication"
 	header := lipgloss.NewStyle().Bold(true).Render(title)
 	footer := lipgloss.NewStyle().Faint(true).Render("Enter: submit  Ctrl+C: cancel")
-	body := lipgloss.NewStyle().Width(bodyW).Height(bodyH).Align(lipgloss.Left, lipgloss.Top).Render(output)
+	body := lipgloss.NewStyle().
+		Width(bodyW).
+		Height(bodyH).
+		Align(lipgloss.Left, lipgloss.Top).
+		Render(output)
 	cardContent := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 	card := tui.PanelStyle(modalW, modalH, true).Render(cardContent)
 	view := lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, card)
