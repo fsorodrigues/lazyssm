@@ -271,7 +271,21 @@ func (m *Model) forceCleanup() {
 	}
 }
 
+func (m *Model) cancelPendingDelete() tea.Cmd {
+	if !m.pendingDelete {
+		return nil
+	}
+
+	m.pendingDelete = false
+	m.pendingDeleteName = ""
+	m.refreshRunningItems()
+	m.State.RunningList.StatusMessageLifetime = time.Second
+	return m.State.RunningList.NewStatusMessage("")
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cancelPendingDeleteCmd tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.State.UserInterface.Resize(msg.Width, msg.Height)
@@ -415,15 +429,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		switch {
-		case msg.String() == "ctrl+c" || (msg.String() == "q" && !m.pendingDelete):
-			return m.beginShutdown()
-		case msg.String() == "ctrl+z":
-			return m, tea.Suspend
-		case msg.String() == "tab":
-			if m.pendingDelete {
-				break
+		if m.pendingDelete && !key.Matches(msg, deleteKey) && msg.String() != "enter" {
+			cancelPendingDeleteCmd = m.cancelPendingDelete()
+			if msg.String() == "escape" || msg.String() == "esc" {
+				return m, cancelPendingDeleteCmd
 			}
+		}
+
+		switch {
+		case msg.String() == "ctrl+c" || msg.String() == "q":
+			updated, shutdownCmd := m.beginShutdown()
+			return updated, tea.Batch(cancelPendingDeleteCmd, shutdownCmd)
+		case msg.String() == "ctrl+z":
+			return m, tea.Batch(cancelPendingDeleteCmd, tea.Suspend)
+		case msg.String() == "tab":
 			m.State.CircleActivePanel()
 		case key.Matches(msg, deleteKey):
 			if m.State.ActivePanel == "running" && len(m.State.RunningList.Items()) > 0 {
@@ -541,7 +560,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.State.RunningList, cmd = m.State.RunningList.Update(msg)
 	}
 
-	return m, cmd
+	return m, tea.Batch(cancelPendingDeleteCmd, cmd)
 }
 
 func (m Model) beginShutdown() (tea.Model, tea.Cmd) {
