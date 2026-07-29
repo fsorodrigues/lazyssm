@@ -76,7 +76,7 @@ Launch the application by running `lazyssm` with optional CLI flags:
 | `-debug`           | `false`                               | Enable debug logging                                     |
 | `-log-file`        | Linux/macOS: `~/.local/state/lazyssm/lazyssm.log`<br>Windows: `%LOCALAPPDATA%\lazyssm\lazyssm.log` | Path to application log file                             |
 | `-process-log-dir` | Linux/macOS: `~/.local/state/lazyssm/process`<br>Windows: `%LOCALAPPDATA%\lazyssm\process` | Directory for per-process logs                           |
-| `-auth-command`    | `aws-mfa`                             | Command to run before starting AWS SSM sessions          |
+| `-auth-command`    | `aws-mfa`                             | Command to run before starting AWS SSM sessions. Quote the full value when passing flags: `-auth-command "cmd --flag"` |
 | `-skip-auth`       | `false`                               | Skip auth preflight before starting AWS SSM sessions     |
 | `-simulate`        | `false`                               | Use simulated services instead of AWS SSM sessions       |
 
@@ -90,6 +90,39 @@ bypasses auth preflight.
 Platform note: Linux/macOS can run the auth command inside an interactive PTY
 modal. On unsupported platforms, lazyssm falls back to running the auth command
 without the in-app PTY modal.
+
+### Auth command
+
+The auth command runs before selected services start. Pass `-skip-auth` or
+`-simulate` to skip it. A non-zero exit from the auth command prevents all
+services from starting.
+
+```bash
+lazyssm -auth-command "aws-mfa --profile dev"
+lazyssm -auth-command "echo hello"
+lazyssm -auth-command 'foo --arg "some value"'
+```
+
+The following does **not** work as intended because `echo` is the auth command
+and `"hello"` becomes a positional argument to lazyssm itself:
+
+```bash
+lazyssm -auth-command echo "hello"
+```
+
+lazyssm parses the `-auth-command` value from argv, splits it into a command
+and arguments, and runs the program directly without shell involvement. This
+means:
+
+- Quoting the full value preserves flags and quoted arguments (`"cmd --flag"`).
+- Pipes (`|`), redirects (`>`), `&&`, environment variable expansion (`$VAR`),
+  and command substitution (`$(cmd)`) are **not** interpreted.
+
+To use shell features, explicitly wrap them in a shell:
+
+```bash
+lazyssm -auth-command 'sh -c "echo $SHELL && whoami"'
+```
 
 ---
 
