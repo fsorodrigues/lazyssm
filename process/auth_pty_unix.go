@@ -3,10 +3,8 @@
 package process
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 
 	"github.com/creack/pty"
@@ -14,12 +12,10 @@ import (
 )
 
 func startAuthPTYCommand(command string) (*exec.Cmd, *os.File, byte, error) {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return nil, nil, 0, fmt.Errorf("auth command is empty")
+	cmd, err := BuildAuthCommand(command)
+	if err != nil {
+		return nil, nil, 0, err
 	}
-
-	cmd := exec.Command(fields[0], fields[1:]...)
 
 	ptmx, tty, err := pty.Open()
 	if err != nil {
