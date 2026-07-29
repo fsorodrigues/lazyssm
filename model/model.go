@@ -94,7 +94,7 @@ func startAuthSessionCmd(command string, service tui.Service) tea.Cmd {
 }
 
 func runAuthExecCmd(command string, service tui.Service) tea.Cmd {
-	cmd, err := process.BuildAuthPreflightCommand(command)
+	cmd, err := process.BuildAuthCommand(command)
 	if err != nil {
 		return func() tea.Msg {
 			return authExecFinishedMsg{service: service, err: err}
@@ -851,15 +851,11 @@ func (m Model) authModalOuterSize() (int, int) {
 }
 
 func authCommandLabel(command string) string {
-	trimmed := strings.TrimSpace(command)
-	if trimmed == "" {
+	args, err := process.ParseAuthCommand(command)
+	if err != nil || len(args) == 0 {
 		return "auth command"
 	}
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
-		return "auth command"
-	}
-	return fields[0]
+	return args[0]
 }
 
 func (m Model) View() tea.View {
