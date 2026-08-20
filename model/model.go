@@ -2,7 +2,9 @@ package model
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +24,8 @@ import (
 const (
 	authOutputLimitBytes = 64 * 1024
 	authModalMinVisible  = 1200 * time.Millisecond
+	authFailureTimeout   = 5 * time.Second
+	authFallbackDelay    = 5 * time.Second
 	shutdownMaxWait      = 5 * time.Second
 )
 
@@ -49,6 +53,12 @@ type (
 	authExitMsg struct {
 		err error
 	}
+	authFailureTimeoutMsg struct {
+		failureID uint64
+	}
+	authFailureCountdownMsg struct {
+		failureID uint64
+	}
 	authSuccessProceedMsg struct{}
 	deleteFinishedMsg     struct {
 		name string
@@ -62,6 +72,7 @@ type (
 
 type authModalState struct {
 	active          bool
+	failed          bool
 	commandLabel    string
 	selectedService tui.Service
 
@@ -72,6 +83,8 @@ type authModalState struct {
 	outputClosed bool
 	exitReceived bool
 	exitErr      error
+	failureID    uint64
+	failedAt     time.Time
 }
 
 func clearStatusAfter(d time.Duration) tea.Cmd {
@@ -101,9 +114,64 @@ func runAuthExecCmd(command string, service tui.Service) tea.Cmd {
 		}
 	}
 
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.Exec(&delayedAuthExecCommand{cmd: cmd}, func(err error) tea.Msg {
 		return authExecFinishedMsg{service: service, err: err}
 	})
+}
+
+// delayedAuthExecCommand keeps the terminal on the auth command's output
+// after a failure, before Bubble Tea restores the lazyssm interface.
+type delayedAuthExecCommand struct {
+	cmd   *exec.Cmd
+	stdin io.Reader
+}
+
+func (c *delayedAuthExecCommand) Run() error {
+	err := c.cmd.Run()
+	if err != nil {
+		waitForAuthFallbackExit(c.stdin)
+	}
+	return err
+}
+
+func (c *delayedAuthExecCommand) SetStdin(r io.Reader) {
+	c.stdin = r
+	if c.cmd.Stdin == nil {
+		c.cmd.Stdin = r
+	}
+}
+
+func (c *delayedAuthExecCommand) SetStdout(w io.Writer) {
+	if c.cmd.Stdout == nil {
+		c.cmd.Stdout = w
+	}
+}
+
+func (c *delayedAuthExecCommand) SetStderr(w io.Writer) {
+	if c.cmd.Stderr == nil {
+		c.cmd.Stderr = w
+	}
+}
+
+func waitForAuthFallbackExit(stdin io.Reader) {
+	if stdin == nil {
+		time.Sleep(authFallbackDelay)
+		return
+	}
+
+	inputRead := make(chan struct{})
+	go func() {
+		var input [1]byte
+		_, _ = stdin.Read(input[:])
+		close(inputRead)
+	}()
+
+	timer := time.NewTimer(authFallbackDelay)
+	defer timer.Stop()
+	select {
+	case <-inputRead:
+	case <-timer.C:
+	}
 }
 
 func waitAuthOutputCmd(ch <-chan []byte) tea.Cmd {
@@ -133,6 +201,18 @@ func authSuccessProceedCmd(d time.Duration) tea.Cmd {
 	})
 }
 
+func authFailureTimeoutCmd(failureID uint64) tea.Cmd {
+	return tea.Tick(authFailureTimeout, func(time.Time) tea.Msg {
+		return authFailureTimeoutMsg{failureID: failureID}
+	})
+}
+
+func authFailureCountdownCmd(failureID uint64) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return authFailureCountdownMsg{failureID: failureID}
+	})
+}
+
 type Model struct {
 	Config            tui.Config
 	State             tui.State
@@ -145,6 +225,7 @@ type Model struct {
 	pendingDeleteName string
 	startInProgress   bool
 	authModal         authModalState
+	nextAuthFailureID uint64
 	deleting          map[string]bool
 	spinner           spinner.Model
 	shuttingDown      bool
@@ -311,11 +392,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, runAuthExecCmd(m.AuthCommand, msg.service)
 			}
 
-			m.startInProgress = false
-			m.closeAuthModal()
-			slog.Warn("aws-mfa preflight failed", "error", msg.err)
-			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed")
-			return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+			m.authModal.exitReceived = true
+			m.authModal.outputClosed = true
+			return m, m.finishAuthFailure(msg.err)
 		}
 
 		m.authModal.active = true
@@ -330,7 +409,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case authOutputMsg:
 		if !msg.ok {
 			m.authModal.outputClosed = true
-			return m, nil
+			return m, m.finishAuthIfReady()
 		}
 
 		m.appendAuthOutput(msg.chunk)
@@ -344,30 +423,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authModal.exitReceived = true
 		m.authModal.exitErr = msg.err
 
-		if m.authModal.session != nil {
-			_ = m.authModal.session.Close()
-		}
-
 		if msg.err != nil {
-			m.startInProgress = false
-			m.closeAuthModal()
-			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed")
-			return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
+			return m, m.finishAuthIfReady()
 		}
 
-		m.appendAuthOutput([]byte("\r\naws-mfa succeeded\r\n"))
-		wait := authModalMinVisible - time.Since(m.authModal.started)
-		return m, authSuccessProceedCmd(wait)
+		return m, m.finishAuthIfReady()
 
 	case authExecFinishedMsg:
 		m.startInProgress = false
 		if msg.err != nil {
 			slog.Warn("aws-mfa preflight failed", "error", msg.err)
-			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed")
+			cmd := m.State.ServiceList.NewStatusMessage("aws-mfa failed: " + msg.err.Error())
 			return m, tea.Batch(cmd, clearStatusAfter(2*time.Second))
 		}
 
 		return m.startService(msg.service)
+
+	case authFailureTimeoutMsg:
+		if m.authModal.active && m.authModal.failed && m.authModal.failureID == msg.failureID {
+			m.closeAuthModal()
+		}
+		return m, nil
+
+	case authFailureCountdownMsg:
+		if !m.authModal.active || !m.authModal.failed || m.authModal.failureID != msg.failureID {
+			return m, nil
+		}
+		if authFailureRemaining(time.Now(), m.authModal.failedAt) <= 0 {
+			return m, nil
+		}
+		return m, authFailureCountdownCmd(msg.failureID)
 
 	case authSuccessProceedMsg:
 		if !m.authModal.active {
@@ -646,6 +731,19 @@ func (m Model) startService(service tui.Service) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleAuthModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.authModal.failed {
+		switch msg.String() {
+		case "escape", "esc":
+			m.closeAuthModal()
+		case "enter":
+			service := m.authModal.selectedService
+			m.startInProgress = true
+			m.initAuthModalSkeleton(service, m.AuthCommand)
+			return m, startAuthSessionCmd(m.AuthCommand, service)
+		}
+		return m, nil
+	}
+
 	if msg.String() == "ctrl+c" {
 		if m.authModal.session != nil {
 			_ = m.authModal.session.Interrupt()
@@ -718,6 +816,58 @@ func (m *Model) closeAuthModal() {
 	m.authModal = authModalState{}
 }
 
+func (m *Model) finishAuthIfReady() tea.Cmd {
+	if !m.authModal.exitReceived || !m.authModal.outputClosed {
+		return nil
+	}
+	if m.authModal.exitErr != nil {
+		return m.finishAuthFailure(m.authModal.exitErr)
+	}
+	if m.authModal.session != nil {
+		_ = m.authModal.session.Close()
+	}
+	m.appendAuthOutput([]byte("\r\naws-mfa succeeded\r\n"))
+	wait := authModalMinVisible - time.Since(m.authModal.started)
+	return authSuccessProceedCmd(wait)
+}
+
+func (m *Model) finishAuthFailure(err error) tea.Cmd {
+	m.startInProgress = false
+	m.authModal.failed = true
+	m.nextAuthFailureID++
+	m.authModal.failureID = m.nextAuthFailureID
+	m.authModal.failedAt = time.Now()
+	m.authModal.exitErr = err
+	if m.authModal.session != nil {
+		_ = m.authModal.session.Close()
+		m.authModal.session = nil
+	}
+	if err != nil && !strings.Contains(string(m.authModal.output), err.Error()) {
+		m.appendAuthOutput([]byte("\r\nerror: " + err.Error() + "\r\n"))
+	}
+	slog.Warn("aws-mfa preflight failed", "error", err)
+	return tea.Batch(
+		authFailureTimeoutCmd(m.authModal.failureID),
+		authFailureCountdownCmd(m.authModal.failureID),
+	)
+}
+
+func authFailureRemaining(now, failedAt time.Time) time.Duration {
+	remaining := authFailureTimeout - now.Sub(failedAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func (m Model) authFailureSecondsRemaining() int {
+	remaining := authFailureRemaining(time.Now(), m.authModal.failedAt)
+	if remaining == 0 {
+		return 0
+	}
+	return int((remaining + time.Second - 1) / time.Second)
+}
+
 func (m *Model) appendAuthOutput(chunk []byte) {
 	if len(chunk) == 0 {
 		return
@@ -729,7 +879,8 @@ func (m *Model) appendAuthOutput(chunk []byte) {
 	}
 	m.authModal.output = append(
 		[]byte(nil),
-		m.authModal.output[len(m.authModal.output)-authOutputLimitBytes:]...)
+		m.authModal.output[len(m.authModal.output)-authOutputLimitBytes:]...,
+	)
 }
 
 func applyAuthOutputChunk(dst []byte, chunk []byte) []byte {
@@ -974,8 +1125,17 @@ func (m Model) authModalView() tea.View {
 	}
 
 	title := m.authModal.commandLabel + " authentication"
+	if m.authModal.failed {
+		title += " failed"
+	}
 	header := lipgloss.NewStyle().Bold(true).Render(title)
-	footer := lipgloss.NewStyle().Faint(true).Render("Enter: submit  Ctrl+C: cancel")
+	footerText := "Enter: submit  Ctrl+C: cancel"
+	if m.authModal.failed {
+		footerText = "Enter: retry  Esc: close  Auto-close: " + strconv.Itoa(
+			m.authFailureSecondsRemaining(),
+		) + "s"
+	}
+	footer := lipgloss.NewStyle().Faint(true).Render(footerText)
 	body := lipgloss.NewStyle().
 		Width(bodyW).
 		Height(bodyH).
