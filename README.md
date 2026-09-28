@@ -1,6 +1,6 @@
 # lazyssm tui
 
-A personal tools to solve the hell of managing a billion different AWS SSM
+A personal tool to solve the hell of managing a billion different AWS SSM
 connection variants. This TUI helps me rationally start port forwarding
 sessions via a simple yaml config, which maps services to targets, ports, and
 AWS profiles.
@@ -32,7 +32,7 @@ Configuration uses a `services` list with the following fields per entry:
 
 - `name`: Unique service identifier
 - `description`: Documentation-facing service description
-- `target`: AWS SSM target (e.g. EC2 instance ID)
+- `target`: AWS SSM target (e.g. an EC2 instance ID)
 - `ports`: Single port mapping (not a list) with `port` (remote service port)
 and `localPort` (local forwarded port)
 - `profile`: AWS profile to authenticate with
@@ -146,17 +146,17 @@ Stopping a running service (`ctrl+d` then `enter`) and quitting the app (`q` or
 
 ## Review bindings
 
-| Keybinding       | Context                | Action                              |
-|------------------|------------------------|-------------------------------------|
-| `enter`          | Available services     | Start selected service              |
-| `tab`            | Global                 | Switch between panels               |
-| `ctrl+d`         | Running services       | Prompt delete for selected service  |
-| `enter`          | Running services (delete prompt) | Confirm delete |
-| `escape`         | Running services (delete prompt) | Cancel delete |
-| `enter`          | Auth modal             | Submit input to auth command        |
-| `ctrl+c`         | Auth modal             | Cancel auth command                 |
-| `q` / `ctrl+c`   | Global                 | Quit and clean up all processes     |
-| `ctrl+z`         | Global                 | Suspend the application             |
+| Keybinding       | Context                          | Action                                |
+|------------------|----------------------------------|---------------------------------------|
+| `enter`          | Available services               | Start selected service                |
+| `tab`            | Global                           | Switch between panels                 |
+| `ctrl+d`         | Running services                 | Prompt to delete for selected service |
+| `enter`          | Running services (delete prompt) | Confirm delete                        |
+| `escape`         | Running services (delete prompt) | Cancel delete                         |
+| `enter`          | Auth modal                       | Submit input to auth command          |
+| `ctrl+c`         | Auth modal                       | Cancel auth command                   |
+| `q` / `ctrl+c`   | Global                           | Quit and clean up all processes       |
+| `ctrl+z`         | Global                           | Suspend the application               |
 
 While the auth modal is open, typed input is forwarded directly to the auth
 command.
@@ -165,7 +165,7 @@ command.
 
 ## Debug
 
-Application logs write by default to:
+Application logs are written by default to:
 
 - Linux/macOS: `~/.local/state/lazyssm/lazyssm.log`
 - Windows: `%LOCALAPPDATA%\lazyssm\lazyssm.log`
